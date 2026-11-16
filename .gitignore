@@ -1,0 +1,20 @@
+# 忽略
+node_modules/
+.tmp/
+*.log
+.DS_Store
+Thumbs.db
+
+# 转换产物(可再生缓存)
+.dshm/
+
+# 测试残留
+test/.fixture-*
+test/out/
+test/*-fromword.docx
+
+# 第三方样本文档不入库(体积 + 授权),自测请自备:
+#   test/sample1.docx   —— 任意一份 docx
+#   test/sample5.doc    —— 任意一份 Word 97-2003 doc
+test/sample*.doc
+test/sample*.docx

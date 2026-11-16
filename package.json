@@ -1,0 +1,45 @@
+{
+  "name": "dshm-tools-doc",
+  "version": "0.6.0",
+  "description": "喵生态的 Word 文档工具:docx → 可读/可编辑文本(正文 md + content.xml + 图片 + 索引),并能回写成 docx",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "docs",
+    "README.md"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lwy0v0/dshm-tools-docx.git"
+  },
+  "homepage": "https://github.com/lwy0v0/dshm-tools-docx#readme",
+  "bugs": {
+    "url": "https://github.com/lwy0v0/dshm-tools-docx/issues"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "test": "node test/verify-full.js",
+    "test:smoke": "node test/smoke.js",
+    "test:convert": "node test/run-convert.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
+  },
+  "keywords": [
+    "dsh",
+    "miao",
+    "docx",
+    "ooxml",
+    "word",
+    "converter",
+    "markdown"
+  ]
+}
