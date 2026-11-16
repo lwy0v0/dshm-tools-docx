@@ -5,7 +5,7 @@
  */
 
 export const 产物版本 = 1
-export const 转换器名 = 'dshm-tools-doc'
+export const 转换器名 = 'dshm-tools-docx'
 
 /**
  * @returns {object}

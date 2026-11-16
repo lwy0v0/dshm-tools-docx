@@ -1,6 +1,6 @@
 {
-  "name": "dshm-tools-doc",
-  "version": "0.6.0",
+  "name": "dshm-tools-docx",
+  "version": "0.7.0",
   "description": "喵生态的 Word 文档工具:docx → 可读/可编辑文本(正文 md + content.xml + 图片 + 索引),并能回写成 docx",
   "type": "module",
   "main": "src/index.js",

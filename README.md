@@ -1,4 +1,4 @@
-# dshm-tools-doc
+# dshm-tools-docx
 
 喵生态的 **Word 文档工具**(`doc_convert` / `doc_build`):把 `.docx` 变成一个可检索的产物文件夹,模型用 `read` / `grep` / `read_image` 读它;需要交付文件时,改产物再回写成 `.docx`。
 
@@ -16,7 +16,7 @@
 
 ```text
 doc_convert({ file: "D:/work/年报.docx" })
-→ 产物目录 D:/项目/.dshm/doc/年报-a1b2c3d4/
+→ 产物目录 D:/项目/.dshm/docx/年报-a1b2c3d4/
   read  index.md       看大纲、统计、图片清单
   grep  content.md     找句子
   read  chapters/02-….md   按章读

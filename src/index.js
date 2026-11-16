@@ -1,8 +1,8 @@
 /**
- * dshm-tools-doc —— 喵生态的 doc 转换器(读 + 编辑 + 回写)。
+ * dshm-tools-docx —— 喵生态的 doc 转换器(读 + 编辑 + 回写)。
  *
  * 两个工具:
- * - `doc_convert`:docx → `<项目>/.dshm/doc/<名>-<sha8>[-样式][-编辑]/` 下的
+ * - `doc_convert`:docx → `<项目>/.dshm/docx/<名>-<sha8>[-样式][-编辑]/` 下的
  *   `content.md` + `chapters/` + `media/` + `index.md` + `manifest.json`
  *   (可编辑版再加 `content.xml` + `raw/原文档.docx`);
  * - `doc_build`:`content.xml` + `raw/` → docx。
@@ -14,7 +14,7 @@ import { docConvertTool } from './tools/convert.js'
 import { docBuildTool } from './tools/build.js'
 
 /** 插件名(与包名一致,loader 诊断用) */
-export const name = 'dshm-tools-doc'
+export const name = 'dshm-tools-docx'
 
 /** 需要工具注册表 */
 export const inject = ['tools']
@@ -24,7 +24,7 @@ export const inject = ['tools']
  */
 export function apply (ctx) {
   for (const 定义 of [docConvertTool(), docBuildTool()]) {
-    ctx.effect(() => ctx.tools.register(定义), `dshm-tools-doc: tool ${定义.name}`)
+    ctx.effect(() => ctx.tools.register(定义), `dshm-tools-docx: tool ${定义.name}`)
   }
 }
 

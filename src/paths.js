@@ -1,9 +1,9 @@
 /**
  * 路径规则:**唯一**拼产物路径的地方(见 `dshm-desktop/docs/存储布局.md` §7)。
  *
- * 包名 `dshm-tools-doc` → 去 `dshm-`、再去分类前缀 `tools-` → `doc`。
+ * 包名 `dshm-tools-docx` → 去 `dshm-`、再去分类前缀 `tools-` → `docx`。
  * (§3 规则:分类前缀不承载语义,不占目录段;撞名时才回填。)
- * 项目里落 `<项目根>/.dshm/doc/`;壳子存储(本插件不用)落 `~/.dshm/doc/`。
+ * 项目里落 `<项目根>/.dshm/docx/`;壳子存储(本插件不用)落 `~/.dshm/docx/`。
  */
 
 import { join, resolve, isAbsolute } from 'node:path'
@@ -11,7 +11,7 @@ import { homedir } from 'node:os'
 
 /** 包名 → 存储子路径(去 dshm- 与 tools- 分类前缀) */
 export function 插件子路径 () {
-  return 'doc'
+  return 'docx'
 }
 
 /** 项目存储根:`<项目根>/.dshm/doc` */
