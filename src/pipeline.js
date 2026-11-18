@@ -4,9 +4,13 @@
  * 只做"顺序"和"错误处理",不做任何解析或格式化细节。
  */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { OoxmlPackage, DocError } from './ooxml/package.js'
+import { 判定输入, 规范化为docx } from './import/office.js'
+import { 分类PDF } from './import/pdf.js'
+import { 取解析器, 解析器名们, 解析器清单 } from './import/parsers.js'
+import { 提取公式图, 公式OCR } from './import/formula.js'
 import { WordContext } from './word/context.js'
 import { 文档解析器 } from './word/document.js'
 import { 读文档属性 } from './word/props.js'
@@ -41,22 +45,32 @@ export async function 转换 (参数) {
     导出图片 = true,
     拆章: 要不要拆 = true,
     带样式 = false,
-    可编辑 = false
+    可编辑 = false,
+    转换超时 = 120_000,
+    PDF解析器 = 'pdf2docx'
   } = 参数
 
   if (!文件) throw new DocError('缺少参数:文件', 'EINVAL')
   if (!existsSync(文件)) throw new DocError(`文件不存在:${文件}`, 'ENOENT')
-  if (!/\.docx$/i.test(文件)) {
-    const 是doc = /\.doc$/i.test(文件)
+  if (!解析器名们().includes(PDF解析器)) {
     throw new DocError(
-      是doc
-        ? `这是 .doc(Word 97-2003)二进制格式,本转换器不解析 —— 请用 Word 另存为 .docx 后重试:${文件}`
-        : `只支持 .docx(Office 2007+),当前文件:${文件}`,
-      'UNSUPPORTED'
+      `未知的 PDF 解析器「${PDF解析器}」。可选:${解析器名们().join(' / ')}\n${解析器清单()}`,
+      'EINVAL'
     )
   }
 
-  const 选项 = { 导出图片, 拆章: 要不要拆, 带样式, 可编辑 }
+  // 按魔数判定,不信后缀:`.doc` 改名成 `.docx`、RTF 冒充 `.doc` 都在这里拦下
+  const 判定 = 判定输入(文件)
+  if (判定.不支持) throw new DocError(判定.不支持, 'UNSUPPORTED')
+
+  // 解析器名要进目录名:同一份 PDF 换个解析器就换一个目录,产物才能并排对比
+  const 解析器名 = !判定.需要规范化
+    ? ''
+    : 判定.格式 === 'pdf'
+      ? PDF解析器
+      : 'libreoffice'
+
+  const 选项 = { 导出图片, 拆章: 要不要拆, 带样式, 可编辑, 解析器: 解析器名 }
   const 存储 = new 产物存储({ 项目根, 存储根 })
   const 指纹 = 产物存储.指纹(文件)
   const 目录 = 存储.目录(文件, 指纹.sha256, 选项)
@@ -66,13 +80,115 @@ export async function 转换 (参数) {
     if (旧) return 摘要(旧, 目录, true)
   }
 
-  const 包 = OoxmlPackage.打开文件(文件)
+  // 非 docx 先在产物目录里规范化成标准 docx,再走同一条解析链路。
+  // 放在缓存检查之后:源文件没变就完全不碰引擎(不用起 LibreOffice / Python)。
+  存储.准备(目录)
+  let 解析文件 = 文件
+  let 规范化 = null
+  if (判定.需要规范化) {
+    const 中间 = join(目录, '_source.docx')
+    try {
+      rmSync(中间, { force: true })
+    } catch (e) {
+      // 产物目录里的 `_source.docx` 正被别的程序打开(Word / WPS / 预览器 / 杀软扫描)。
+      // 直接把 EPERM 抛出去只有一行堆栈,看不懂发生了什么 —— 换成能照做的说明。
+      if (e && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'EACCES')) {
+        throw new DocError(
+          `产物文件被占用,无法覆盖:${中间}\n` +
+          '请先关闭正在打开它的程序(Word / WPS / 预览器)再试;' +
+          '或者换一个项目根,让产物落到别的目录。',
+          'EBUSY'
+        )
+      }
+      throw e
+    }
+    let 转换结果
+    if (判定.格式 === 'pdf') {
+      // 先分类:图片型没有文本层,必须 OCR —— 明确拒绝,不假装成功
+      const 分类 = 分类PDF(文件)
+      if (分类.类型 === 'image') {
+        throw new DocError(
+          `这是图片型 PDF(扫描件),没有文本层,无法直接转成 docx:${分类.依据}。` +
+          '这类文件需要 OCR 才能取到文字,当前尚未支持。',
+          'UNSUPPORTED'
+        )
+      }
+      // PDF 转换慢,给足时间(大文档可达数分钟)
+      const PDF超时 = Math.max(Number(转换超时), 600_000)
+      const 解析器定义 = 取解析器(PDF解析器)
+      // 模型缓存必须落在项目内:沙箱下子进程写不了 ~/.cache(HF 默认位置)
+      const 模型缓存 = join(存储.根, '..', 'cache', 'huggingface')
+      const 解析结果 = await 解析器定义.转({
+        输入: 文件,
+        docx输出: 中间,
+        md输出: join(目录, '_source.md'),
+        超时: PDF超时,
+        环境: { HF_HOME: 模型缓存, HF_HUB_CACHE: join(模型缓存, 'hub') }
+      })
+      转换结果 = {
+        ...解析结果,
+        策略: 解析器定义.策略,
+        PDF分类: { 类型: 分类.类型, 页数: 分类.页数, 依据: 分类.依据 }
+      }
+
+      // 公式:pdf2docx 不认识公式(会碎成字符塞进表格),所以另从原 PDF 抠成图片,
+      // 再识别成 LaTeX、转 OMML 写回 docx(可编辑的 Word 公式)。
+      // 增强项 —— 任一环失败都不该让整次转换失败。
+      if (导出图片) {
+        try {
+          转换结果.公式图 = await 提取公式图({ pdf: 文件, 输出目录: 目录 })
+          if (转换结果.公式图.ok && 转换结果.公式图.公式数 > 0) {
+            转换结果.公式OCR = await 公式OCR({ 产物目录: 目录, docx: 中间 })
+          }
+        } catch (e) {
+          转换结果.公式图 = 转换结果.公式图 || {
+            ok: false, 公式数: 0, 清单路径: null,
+            原因: String(e && e.message ? e.message : e)
+          }
+        }
+      }
+    } else {
+      转换结果 = await 规范化为docx({ 输入: 文件, 输出: 中间, timeoutMs: Number(转换超时) })
+    }
+    规范化 = {
+      ...转换结果,
+      原始格式: 判定.实际是 || 判定.格式,
+      中间文件: '_source.docx'
+    }
+    解析文件 = 中间
+  }
+
+  const 包 = OoxmlPackage.打开文件(解析文件)
   const 主文档 = 包.主文档路径()
 
-  存储.准备(目录)
   const 媒体 = new 媒体导出器({ 包, 目录: join(目录, 'media') })
   const 上下文 = new WordContext({ 包, 主文档, 选项, 媒体 })
   const 结果 = new 文档解析器(上下文).解析()
+
+  // 规范化是有损的:转换过程丢掉的东西必须进"不可得",不能静默吞掉
+  const 不可得 = [...(结果.不可得 || [])]
+  if (规范化) {
+    不可得.push({
+      原因: `由 ${规范化.原始格式} 经 ${规范化.引擎 || '外部引擎'} 规范化成 docx 后解析;` +
+        '版式、编号与域可能被重排,原文格式不保证保真'
+    })
+    if (规范化.缺失字体.length) {
+      不可得.push({
+        原因: `规范化时缺字体:${规范化.缺失字体.join('、')} —— 对应字形已被替换,可能与原件不同`
+      })
+    }
+    // 公式:pdf2docx 会把它碾成字符,结构必然丢失 —— 说清楚,并指向抠出来的图片
+    const 公式图 = 规范化.公式图
+    if (公式图 && 公式图.ok && 公式图.公式数 > 0) {
+      不可得.push({
+        原因: `PDF 里的公式已被 pdf2docx 碾成普通字符,上下标与分式结构丢失;` +
+          `已从原 PDF 裁出 ${公式图.公式数} 张公式图放在 media/formulas/(清单 formulas.json),` +
+          '要看公式请 read_image 打开对应图片,再按需转成 LaTeX'
+      })
+    } else if (公式图 && !公式图.ok) {
+      不可得.push({ 原因: `公式图提取未完成:${公式图.原因 || '未知原因'}` })
+    }
+  }
 
   const 文档属性 = 读文档属性(包)
   const 转换时间 = new Date().toISOString()
@@ -113,7 +229,7 @@ export async function 转换 (参数) {
     产物根: 目录,
     转换时间,
     统计: 结果.统计,
-    不可得: 结果.不可得,
+    不可得,
     章节: 章节结果.章节,
     资源: 结果.资源,
     文档属性,
@@ -129,11 +245,12 @@ export async function 转换 (参数) {
     产物根: 目录,
     转换时间,
     统计: 结果.统计,
-    不可得: 结果.不可得,
+    不可得,
     章节: 章节结果.章节,
     资源: 结果.资源,
     文档属性,
     选项,
+    规范化,
     版本
   })
 
@@ -167,8 +284,8 @@ export async function 转换 (参数) {
       版本,
       转换时间
     }))
-    // raw/ 母版:整份原文档原样留一份,回写时按锚点取原文
-    存储.写二进制(目录, join('raw', '原文档.docx'), readFileSync(文件))
+    // raw/ 母版:留一份**规范化后**的 docx —— 回写按它取原文,所以必须是真正的 docx
+    存储.写二进制(目录, join('raw', '原文档.docx'), readFileSync(解析文件))
   }
 
   return 摘要(清单, 目录, false)
@@ -183,6 +300,18 @@ function 摘要 (清单, 目录, 命中) {
     统计: 清单.统计,
     不可得: (清单.不可得 || []).map(x => x.原因),
     章节数: 清单.产物?.章节?.length || 0,
+    规范化: 清单.规范化
+      ? {
+          原始格式: 清单.规范化.原始格式,
+          引擎: 清单.规范化.引擎,
+          策略: 清单.规范化.策略,
+          后端: 清单.规范化.后端,
+          缺失字体: 清单.规范化.缺失字体 || [],
+          ...(清单.规范化.PDF分类 ? { PDF分类: 清单.规范化.PDF分类 } : {}),
+          公式图: 清单.规范化.公式图 || null,
+          公式OCR: 清单.规范化.公式OCR || null
+        }
+      : null,
     命中缓存: 命中,
     产物版本
   }

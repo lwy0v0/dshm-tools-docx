@@ -29,21 +29,24 @@ export function 壳子产物根 () {
 
 /**
  * 目录名:`<文件名清洗>-<sha8>`,再按选项加后缀 —— 多个版本要能**并存**。
+ * - 解析器 → `-pymupdf4llm`(非 docx 输入才有;同一份 PDF 换解析器各占一个目录,便于对照)
  * - 带样式 → `-样式`
  * - 可编辑 → `-编辑`
  * - 两个都要 → `-样式编辑`
  *
  * @param {string} 源文件
  * @param {string} sha256
- * @param {{带样式?:boolean, 可编辑?:boolean}} [选项]
+ * @param {{带样式?:boolean, 可编辑?:boolean, 解析器?:string}} [选项]
  */
 export function 产物目录名 (源文件, sha256, 选项 = {}) {
   const 基 = 源文件.split(/[\\/]/).pop() || 'doc'
   const 去扩展 = 基.replace(/\.[^.]+$/, '')
-  const 干净 = 去扩展.replace(/[^\w\u4e00-\u9fa5.\-]/g, '_').slice(0, 60) || 'doc'
+  // 前导点会被当成隐藏目录,顺手去掉
+  const 干净 = 去扩展.replace(/^\.+/, '').replace(/[^\w\u4e00-\u9fa5.\-]/g, '_').slice(0, 60) || 'doc'
+  const 解析器段 = 选项.解析器 ? `-${String(选项.解析器).replace(/[^\w.\-]/g, '_')}` : ''
   const 标记 = [选项.带样式 ? '样式' : '', 选项.可编辑 ? '编辑' : ''].filter(Boolean).join('')
   const 后缀 = 标记 ? `-${标记}` : ''
-  return `${干净}-${sha256.slice(0, 8)}${后缀}`
+  return `${干净}-${sha256.slice(0, 8)}${解析器段}${后缀}`
 }
 
 /** sha256 前 8 位(目录名里用) */

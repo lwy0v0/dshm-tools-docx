@@ -7,6 +7,7 @@
 import { isAbsolute, resolve } from 'node:path'
 import { 转换 } from '../pipeline.js'
 import { 解析工作区 } from '../workspace.js'
+import { 解析器名们, 解析器清单 } from '../import/parsers.js'
 
 const 参数 = {
   type: 'object',
@@ -14,7 +15,15 @@ const 参数 = {
   properties: {
     file: {
       type: 'string',
-      description: 'docx 文件的绝对路径(相对路径按会话工作区解析)。只支持 .docx。'
+      description: '文档的绝对路径(相对路径按会话工作区解析)。支持 .docx / .doc / .odt / .pdf:' +
+        '.doc 与 .odt 用内置 LibreOffice 引擎规范化;.pdf 会先分类,只有文本型(直接保存的)能转,' +
+        '扫描件会明确报"需要 OCR"。PDF 需要 Python 依赖(pymupdf4llm 或 pdf2docx)。'
+    },
+    parser: {
+      type: 'string',
+      enum: 解析器名们(),
+      description: 'PDF 解析器(仅 .pdf 生效)。当前只有 `pdf2docx`:按 PDF 原始坐标还原版式、保留图片,' +
+        '字体不做完全匹配。产物目录名会带解析器标识(如 `-pdf2docx`),以后加/换解析器时可并存对比。'
     },
     project: {
       type: 'string',
@@ -57,8 +66,13 @@ const 输出schema = {
     stats: { type: 'object', description: '各类内容计数' },
     missing: { type: 'array', items: { type: 'string' }, description: '读不到的东西' },
     chapters: { type: 'integer', description: '拆出的章节数' },
+    parser: { type: ['string', 'null'], description: '实际使用的解析器名(如 pymupdf4llm / pdf2docx / libreoffice-kit);原生 docx 为 null' },
     styled: { type: 'boolean', description: '本次产物是否是带样式版本' },
     editable: { type: 'boolean', description: '本次产物是否含可编辑视图(content.xml)' },
+    imported: {
+      type: ['object', 'null'],
+      description: '非 docx 输入的规范化信息(原始格式/引擎/缺字体);原生 docx 为 null'
+    },
     cached: { type: 'boolean', description: '是否命中缓存(没重新解析)' }
   },
   required: ['outDir', 'index', 'content', 'stats', 'cached']
@@ -73,7 +87,7 @@ export function docConvertTool () {
       '能转文本的全都转文本(标题层级、列表、表格含合并、OMML 公式→LaTeX、脚注尾注、批注、修订、域缓存、文本框、图表数据、SmartArt 文字、页眉页脚、文档属性);' +
       '转不成的(位图、EMF/WMF 矢量、OLE 对象)导出成 media/ 下的文件,由你决定要不要 read_image。\n' +
       '读不到的东西(页码、自动分页、浮动坐标)会在产物里标成 〔不可得:…〕,不会静默丢掉。\n' +
-      '`.doc`(Word 97-2003 二进制)不支持,请另存为 .docx。',
+      '`.doc`(Word 97-2003)与 `.odt` 可以直接给:内部会先用自带的 LibreOffice 引擎规范化成 docx 再解析,不需要你手动另存。',
     parameters: 参数,
     output: { schema: 输出schema, render: (_args, 值) => [{ type: 'text', text: 渲染结果(值) }] },
     isConcurrencySafe: () => true,
@@ -96,7 +110,8 @@ export function docConvertTool () {
         导出图片: args.images !== false,
         拆章: args.split !== false,
         带样式: args.styles === true,
-        可编辑: args.edit === true
+        可编辑: args.edit === true,
+        PDF解析器: args.parser === 'pymupdf4llm' ? 'pymupdf4llm' : 'pdf2docx'
       })
 
       return {
@@ -106,8 +121,10 @@ export function docConvertTool () {
         stats: 结果.统计,
         missing: 结果.不可得,
         chapters: 结果.章节数,
+        parser: 结果.规范化?.引擎 || null,
         styled: args.styles === true,
         editable: args.edit === true,
+        imported: 结果.规范化 || null,
         cached: 结果.命中缓存
       }
     }
@@ -119,6 +136,15 @@ function 渲染结果 (值) {
   const s = 值.stats || {}
   const 行 = []
   行.push(值.cached ? '已存在同源文件的产物(命中缓存,未重新解析)。' : '转换完成。')
+  if (值.imported) {
+    const 缺 = 值.imported.缺失字体
+    const 引擎 = 值.imported.引擎 || 值.parser || '外部引擎'
+    行.push(
+      `解析器:【${引擎}】—— 输入 ${值.imported.原始格式} 由它规范化成 docx 后再解析` +
+      (缺 && 缺.length ? `;缺字体:${缺.join('、')}(未知字体已回落默认字形)` : '') + '。'
+    )
+    行.push(`(产物目录名已带解析器标识,换解析器不会覆盖本目录,可直接与其它解析器的产物并排对比)`)
+  }
   行.push(`产物目录:${值.outDir}`)
   行.push(`先读索引:${值.index}`)
   行.push(`全文:${值.content}${值.chapters ? `,按章:${值.chapters} 个文件在 chapters/` : ''}`)

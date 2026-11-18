@@ -41,3 +41,10 @@ export { 公式转换 } from './math/omml.js'
 export { 渲染块 } from './output/markdown/index.js'
 export { 产物存储 } from './store.js'
 export { 项目产物根, 壳子产物根, 产物目录名 } from './paths.js'
+// 拓展插件:非 docx 输入 → docx 规范化(自带 LibreOffice 引擎)
+export { 判定输入, 规范化为docx, 嗅探容器 } from './import/office.js'
+// PDF:先分类再决定(文本型 → pdf2docx 还原版式;图片型 → 明确拒绝)
+export { 分类PDF, 探测pdf2docx, 规范化为docx_PDF } from './import/pdf.js'
+// PDF 解析器注册表(当前只启用 pdf2docx;其余实验实现见 .test/,不参与发布)
+export { 解析器表, 解析器名们, 解析器清单, 取解析器 } from './import/parsers.js'
+export { 找Python, 跑Python } from './import/python.js'

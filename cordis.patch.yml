@@ -1,0 +1,12 @@
+# dshm-tools-docx 组合包层:把插件行插入组合。
+#
+# 本文件由 package.json 的 `dsh.bundle.patch` 声明,装进 profile 后会把下面这行合入组合
+# (按包名引用,loader 从 profile 依赖解析)。
+#
+# 用户想改配置时不要改这个文件:在自己的 cordis.patch.yml 里按相同 id 写一条覆盖即可
+# (后应用的层按行胜出,config 整体替换、不深合并)。
+- insert:
+    - id: dshm-tools-docx
+      name: dshm-tools-docx
+      # config:
+      #   # 目前没有可配项:转换超时、是否导出图片等都走 doc_convert 的工具参数。

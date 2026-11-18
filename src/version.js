@@ -5,6 +5,6 @@
  */
 
 export const 产品目录 = 'dshm-tools-docx'
-export const 版本 = '0.7.0'
+export const 版本 = '0.9.0'
 
 export default { 产品目录, 版本 }

@@ -18,3 +18,19 @@ test/*-fromword.docx
 #   test/sample5.doc    —— 任意一份 Word 97-2003 doc
 test/sample*.doc
 test/sample*.docx
+
+# 实验性解析器实现(pymupdf4llm / docling / docling-layout):不进版本库。
+# 保留在本地 .test/ 下;需要恢复时把对应文件移回 src/import/ 并在 parsers.js 里登记。
+.test/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 依赖安装残留
+.vendor/
+.pip-tmp/
+
+# 说明:`vendor/`(插件自带的 Python 运行环境,约 400 MB)**刻意入库** ——
+# 插件要发布出去就得开箱即用,不能让使用者先去装 Python。
+# 单个最大文件 81.9 MB(cv2.pyd),在 GitHub 的 100 MB 限制之内。

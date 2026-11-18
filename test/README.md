@@ -25,9 +25,39 @@ node test/verify-format.js <产物目录> <docx>    # 只改格式、没动文�
 node test/format-paper.js <可编辑产物目录>       # 套学术论文格式 → 论文格式.docx
 ```
 
-## `.doc`(Word 97-2003)探针
+## `.doc` / `.odt`(拓展插件)
 
-`.doc` 支持尚在评估阶段(见仓库 `doc/旧格式doc-可行性分析.md`),下面是研究用探针:
+已接入正式路径:非 docx 输入由 `src/import/office.js` 调用 `@deepseek-ai/libreoffice-kit`
+(自带 LibreOffice 引擎)规范化为 `_source.docx`,随后走与原生 docx 相同的解析链路。
+
+```bash
+node test/verify-import.js    # 魔数判定 + .doc 端到端 + 缓存(15 项断言,需要引擎)
+```
+
+## PDF(先分类再转)
+
+`src/import/pdf.js` 先分类:**文本型/混合型**交给 `pdf2docx`(Python)转 docx;
+**图片型(扫描件)**直接拒绝并说明需要 OCR。判据是每页文本操作符数,不是图片数量。
+
+```bash
+node test/verify-pdf.js                                  # 分类判据 + 拒绝分支(7 项断言)
+$env:DSHM_TEST_PDF='D:\某论文.pdf'; node test/verify-pdf.js   # 再加端到端
+```
+
+## 公式(定位 / 裁图 / 识别 / 写回)
+
+```bash
+node test/单页.mjs 5 [源PDF]    # 抠一页走完整链路,20~40 秒,迭代用
+node test/整份.mjs [源PDF]      # 整篇过一遍,暴露只在长文档上才犯的错
+```
+
+两个都吃 `vendor/python`(自带 PyMuPDF / pix2tex),不需要本机装 Python。
+`单页.mjs` 默认取 `D:\APP\dsh\.test-paper.pdf` 的第 5 页 —— 公式 (2)(3)(4) 在那里。
+
+端到端样本**不提交进仓库**:放一份 `test/sample.pdf`,或用 `DSHM_TEST_PDF` 指过去;
+两者都没有时只跑分类部分(需要 `pip install pdf2docx`)。
+
+下面三个是**早期研究用**探针(自研 CFB 解析路线的遗留),现在不再需要:
 
 ```bash
 node test/probe-doc.js <你的.doc>         # CFB 流清单 + FIB + 分片表取正文
