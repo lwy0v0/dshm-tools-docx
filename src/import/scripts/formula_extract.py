@@ -194,6 +194,18 @@ def 同行带里有正文(行, 行们, 间隙上限=40.0):
     return False
 
 
+def _并区域(clip, 编号bbox):
+    """把裁图边界和编号位置并成一个矩形(给 pdf2docx 剔文字用)。"""
+    if not 编号bbox:
+        return [round(v, 1) for v in clip]
+    return [
+        round(min(clip.x0, 编号bbox[0]), 1),
+        round(min(clip.y0, 编号bbox[1]), 1),
+        round(max(clip.x1, 编号bbox[2]), 1),
+        round(max(clip.y1, 编号bbox[3]), 1),
+    ]
+
+
 def 主(pdf_path, out_dir):
     图片目录 = os.path.join(out_dir, 'media', 'formulas')
     os.makedirs(图片目录, exist_ok=True)
@@ -329,6 +341,7 @@ def 主(pdf_path, out_dir):
                         'page': pno,
                         'y': (s['bbox'][1] + s['bbox'][3]) / 2,
                         'x0': s['bbox'][0],
+                        'bbox': [round(v, 1) for v in s['bbox']],
                         '值': int(m.group(1)),
                     })
 
@@ -344,9 +357,10 @@ def 主(pdf_path, out_dir):
             if 距 > 30:
                 continue
             if 最近 is None or 距 < 最近[0]:
-                最近 = (距, 号['值'])
+                最近 = (距, 号['值'], 号['bbox'])
         if 最近:
             c['编号'] = 最近[1]
+            c['编号bbox'] = 最近[2]       # 给 pdf2docx 剔除文字用(见下面的"区域")
 
     # 同一个编号的组就是同一个公式被**横向**拆开(如 `L_alg = min(…)` 左右两大块),
     # 按编号并回去 —— 否则它们会各自单独 OCR,出来互不相干的几份乱码。
@@ -403,6 +417,12 @@ def 主(pdf_path, out_dir):
             '高': pix.height,
             'bbox': [round(v, 1) for v in clip],
             '编号': c.get('编号'),
+            # 「区域」= 公式本体 ∪ 编号,比 bbox 宽(编号在页面右侧)。
+            # 两个用途不同,别混:
+            #   bbox  —— 裁图边界,不能含编号(编号由 latex2omml 那边补);
+            #   区域  —— 传给 pdf2docx 剔除文字的范围,必须含编号,否则 docx 里
+            #            会剩一个孤零零的 "(2)" 和公式图片挤在同一段落。
+            '区域': _并区域(clip, c.get('编号bbox')),
             '文本': c['文本'][:100],
         })
 
