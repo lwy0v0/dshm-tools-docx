@@ -127,11 +127,20 @@ function 数页数 (s) {
 
 /** 喂给 Python 的转换代码(参数走 sys.argv,不经 shell) */
 const 转换代码 = [
-  'import sys',
+  'import sys, json',
   'from pdf2docx import Converter',
+  'regions = []',
+  '# 第 3 个参数是 formula_extract.py 产出的 formulas.json:',
+  '# 里面有每个公式的 bbox(裁图用)和「区域」(含编号,剔文字用)。',
+  '# pdf2docx 不认识公式,把区域交给它,它会把公式渲染成图片注入 —— 见',
+  '# vendor/.../page/RawPageFitz.py 的 formula_regions 处理。',
+  'if len(sys.argv) > 3 and sys.argv[3]:',
+  '    raw = json.load(open(sys.argv[3], encoding="utf-8"))',
+  '    regions = [{"page": f["页"] - 1, "bbox": f["bbox"], "区域": f.get("区域")}',
+  '               for f in raw.get("公式", [])]',
   'cv = Converter(sys.argv[1])',
   'try:',
-  '    cv.convert(sys.argv[2])',
+  '    cv.convert(sys.argv[2], formula_regions=regions)',
   'finally:',
   '    cv.close()'
 ].join('\n')
@@ -147,9 +156,11 @@ export async function 探测pdf2docx () {
 /**
  * 用 pdf2docx 把文本型 PDF 转成 docx。
  *
- * @param {{输入:string, 输出:string, 超时?:number}} 参数
+ * @param {{输入:string, 输出:string, 超时?:number, 公式区域?:string}} 参数
+ *   公式区域 = formulas.json 的路径。给了它,pdf2docx 会把这些区域渲染成图片
+ *   注入(而不是把公式碾成散字塞进表格),后续再由 formula_ocr 换成 OMML。
  */
-export async function 规范化为docx_PDF ({ 输入, 输出, 超时 = 600_000 }) {
+export async function 规范化为docx_PDF ({ 输入, 输出, 超时 = 600_000, 公式区域 = null }) {
   const 探测 = await 探测pdf2docx()
   if (!探测.可用) {
     throw new DocError(
@@ -158,7 +169,9 @@ export async function 规范化为docx_PDF ({ 输入, 输出, 超时 = 600_000 }
       'NOADAPTER'
     )
   }
-  const 结果 = await 跑Python({ 代码: 转换代码, 参数: [输入, 输出], 超时 })
+  const 参数 = [输入, 输出]
+  if (公式区域) 参数.push(公式区域)
+  const 结果 = await 跑Python({ 代码: 转换代码, 参数, 超时 })
   if (!结果.成功) {
     const 细节 = 结果.超时
       ? `转换超时(${Math.round(超时 / 1000)}s)`

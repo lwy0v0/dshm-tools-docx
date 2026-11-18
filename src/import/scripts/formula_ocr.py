@@ -364,6 +364,100 @@ def 建公式段落(doc, omml, 编号):
     return p
 
 
+def 替换公式图片(docx_path, 条目们):
+    """把 pdf2docx 注入的"公式图片"换成 OMML —— **原位替换的正路**。
+
+    背景:pdf2docx 没有公式概念,只会按几何猜布局(公式碎片间 15~20pt 的空档
+    会被判成无边框表格),公式在 docx 里要么是一堆散字、要么缩进表格单元格。
+    所以我们让它按 PDF 侧的定位结果,把公式区域**渲染成图片**注入
+    (见 vendor/.../page/RawPageFitz.py),docx 里那处就是一张尺寸等于公式
+    bbox 的图片。这里按尺寸把它认出来,换成 OMML。
+
+    为什么按尺寸认而不是按顺序:文档里还有十几张正文插图,数顺序会错位;
+    而 cx/cy(EMU = bbox 宽高 × 12700)是注入时唯一的身份特征。
+
+    段落里可能还有正文(实测 "are computed as:" 和公式被排进同一段),
+    所以只摘掉图片、保留段落本身,公式另起一段。
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
+
+    候选 = []
+    for 条 in 条目们:
+        if not 条.get('omml') or not 条.get('bbox'):
+            continue
+        x0, y0, x1, y1 = 条['bbox']
+        候选.append({
+            '条': 条,
+            'cx': round((x1 - x0) * 12700),
+            'cy': round((y1 - y0) * 12700),
+        })
+    if not 候选:
+        return 0
+
+    doc = Document(docx_path)
+    替换 = 0
+    已用 = set()
+
+    # 用 XML 遍历而不是 doc.paragraphs:图片可能落在表格单元格里
+    for p in list(doc.element.body.iter(qn('w:p'))):
+        for 图 in p.findall('.//' + qn('w:drawing')):
+            ext = 图.find('.//{%s}extent' % WP)
+            if ext is None:
+                continue
+            try:
+                cx, cy = int(ext.get('cx')), int(ext.get('cy'))
+            except (TypeError, ValueError):
+                continue
+
+            命中 = None
+            for i, c in enumerate(候选):
+                if i in 已用:
+                    continue
+                if abs(cx - c['cx']) <= max(3, c['cx'] * 0.02) and \
+                   abs(cy - c['cy']) <= max(3, c['cy'] * 0.02):
+                    命中 = (i, c['条'])
+                    break
+            if not 命中:
+                continue
+            i, 条 = 命中
+            已用.add(i)
+
+            try:
+                新段 = 建公式段落(doc, 条['omml'], 条.get('编号'))
+            except Exception:
+                continue
+            try:
+                # 段落可能在一个表格单元格里(pdf2docx 常把"正文 + 公式"排成表)。
+                # 公式必须落在**表格外**,否则会成为表格的一个单元格,既不对齐重排
+                # 也会把编号留在单元格里。有表格祖先就插到表格后面。
+                祖先 = p.getparent()
+                while 祖先 is not None and 祖先.tag != qn('w:tbl'):
+                    祖先 = 祖先.getparent()
+                if 祖先 is not None:
+                    祖先.addnext(新段._p)
+                else:
+                    p.addnext(新段._p)
+                图.getparent().remove(图)
+                条['已原位替换'] = True
+                替换 += 1
+            except Exception:
+                continue
+
+        # 图片摘掉后如果这段只剩空白,删掉它,免得留一堆空行
+        剩 = ''.join(t.text or '' for t in p.iter(qn('w:t')))
+        if not 剩.strip() and p.find('.//' + qn('w:drawing')) is None:
+            父 = p.getparent()
+            if 父 is not None and 父.tag == qn('w:body'):
+                父.remove(p)
+
+    if 替换:
+        doc.save(docx_path)
+    return 替换
+
+
 def 替换公式表格(docx_path, 条目们):
     """**原位替换**:pdf2docx 会把公式排成一个"单行表格",末尾单元格是编号 (n)。
     按编号找到对应公式,把整个表格换成一个含 OMML 的段落 —— 这样公式就落在正文原位,
@@ -379,7 +473,9 @@ def 替换公式表格(docx_path, 条目们):
     doc = Document(docx_path)
     按编号 = {}
     for 条 in 条目们:
-        if 条.get('编号') and 条.get('omml'):
+        # 跳过硬已经被 替换公式图片 处理过的 —— 否则图片换成公式段落后,
+        # 这里又会按编号匹配到那一段,重复插一份公式(实测 3 个公式报成 5)。
+        if 条.get('编号') and 条.get('omml') and not 条.get('已原位替换'):
             按编号[int(条['编号'])] = 条
 
     if not 按编号:
@@ -557,9 +653,10 @@ def 主(产物目录, docx路径):
         # (这里原本是一个大 try,`清理残片段落(doc)` 传了个不存在的 doc,
         #  NameError 把整段记成「写回失败」,还连带跳过了残片清理与文末兜底。)
         try:
-            # 先原位替换(按论文编号对上 pdf2docx 生成的公式表格)
-            替换数 = 替换公式表格(docx路径, 成功)
-            # 再处理段落形态的公式(表格之外的漏网之鱼)
+            # 正路:pdf2docx 按我们给的区域把公式渲染成了图片,这里换成 OMML
+            替换数 = 替换公式图片(docx路径, 成功)
+            # 兜底:老产物或注入失败的,仍按表格/段落形态匹配
+            替换数 += 替换公式表格(docx路径, 成功)
             替换数 += 替换公式段落(docx路径, 成功)
             清单['原位替换数'] = 替换数
         except Exception as e:

@@ -35,8 +35,8 @@ export const 解析器表 = {
       '字体不做完全匹配 —— 缺失字形回落默认字体。',
     依赖: 'pip install pdf2docx',
     产出: 'docx(版式还原,含图片)',
-    转: async ({ 输入, docx输出, 超时 }) =>
-      规范化为docx_PDF({ 输入, 输出: docx输出, 超时 })
+    转: async ({ 输入, docx输出, 超时, 公式区域 }) =>
+      规范化为docx_PDF({ 输入, 输出: docx输出, 超时, 公式区域 })
   }
 }
 
