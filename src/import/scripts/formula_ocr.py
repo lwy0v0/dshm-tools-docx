@@ -580,18 +580,40 @@ def _找边缘竖排(pdf_path, 字数上限=80, 页宽比例=0.12):
     return 结果
 
 
+def _映射字体(名):
+    '''把 PDF 里的字体名映射到 Windows/Word 上真实存在的字体。
+
+    不映射的后果:PDF 里叫 `Times-Roman`,Word 里没有这个字体名,会**回落到某种
+    默认字体**,字形宽度一变,旋转 90° 之后长度就对不上、文字捅出框外。
+    '''
+    n = (名 or '').lower()
+    if 'times' in n or 'nimbusrom' in n or 'nimbus rom' in n:
+        return 'Times New Roman'
+    if 'helvetica' in n or 'arial' in n or 'nimbussan' in n:
+        return 'Arial'
+    if 'courier' in n or 'nimbusmono' in n:
+        return 'Courier New'
+    if 'symbol' in n:
+        return 'Symbol'
+    if 'gothic' in n:
+        return 'MS Gothic'
+    return 'Times New Roman'
+
+
 def 插入竖排文本框(docx_path, pdf_path):
-    '''把 PDF 里的"边缘竖排短文"还原成 Word 里的竖排框架。
+    '''把 PDF 里的"边缘竖排短文"还原成 Word 里**旋转 90°** 的正文。
 
     为什么必须在 PDF 侧找:pdf2docx 只要看见竖排文本,就会把那一片版面判成表格
     (``is_flow_layout`` 里"竖排按 stream table 模拟"),为了框住它把正文也卷进表格。
     所以 RawPageFitz 把这行字从版面里摘掉了(不参与布局),这里再按 PDF 原始坐标
-    重建一个"固定在页面上"的竖排段落。
+    重建一个"固定在页面上"的段落。
 
-    **用 ``w:framePr``(段落框架),不用 VML ``v:shape``**:
-    实测 v:shape 的 ``position:absolute`` 与 ``layout-flow:vertical-ideographic``
-    在 Word 里既不定位也不竖排,只落成左上角一坨小字。framePr 是 Word 原生框架,
-    ``hAnchor/vAnchor="page"`` 直接按页面坐标摆,``w:textDirection`` 管竖排方向。
+    两个关键点(都是实测踩出来的):
+    * 用 ``w:framePr`` 定位,不用 VML ``v:shape`` —— 后者的 position:absolute 与
+      layout-flow 在 Word 里既不定位也不旋转,只落成左上角一坨小字;
+    * ``w:textDirection`` 要用 **``btLr``**(从下往上),不是 ``tbRlV``。
+      ``tbRlV`` 是中日文竖排(一字一列往下堆),套在英文上会一字一列地堆下去、
+      很快冲出框外;英文要的是**整行旋转 90°**、从下往上读。
 
     返回插入的个数。
     '''
@@ -611,25 +633,27 @@ def 插入竖排文本框(docx_path, pdf_path):
     插入 = 0
     for 项 in 竖排们:
         x0, y0, x1, y1 = 项['bbox']
-        # framePr 的长度单位是 twips(1pt = 20 twips)
+        # framePr 的长度单位是 twips(1pt = 20 twips)。
+        # 旋转 90° 之后:框的"宽"对应字高方向,框的"高"对应整行长度方向 ——
+        # 正好和 PDF 里那个竖条 bbox 的宽高一致,直接沿用。
         宽 = max(int((x1 - x0) * 20), 280)
         高 = max(int((y1 - y0) * 20), 900)
         x = max(int(x0 * 20), 0)
         y = max(int(y0 * 20), 0)
         # w:sz 是半磅值:20pt -> 40
         半磅 = max(int(round((项.get('字号') or 10.0) * 2)), 8)
-        字体 = escape(项.get('字体') or 'Times New Roman')
+        字体 = escape(_映射字体(项.get('字体')))
 
         xml = (
             f'<w:p xmlns:w="{W_NS}">'
             '<w:pPr>'
             f'<w:framePr w:w="{宽}" w:h="{高}" w:hAnchor="page" w:vAnchor="page" '
             f'w:x="{x}" w:y="{y}" w:wrap="none" w:hRule="atLeast"/>'
-            '<w:textDirection w:val="tbRlV"/>'
+            '<w:textDirection w:val="btLr"/>'
             '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>'
             '</w:pPr>'
             '<w:r><w:rPr>'
-            f'<w:rFonts w:ascii="{字体}" w:hAnsi="{字体}"/>'
+            f'<w:rFonts w:ascii="{字体}" w:hAnsi="{字体}" w:cs="{字体}"/>'
             f'<w:sz w:val="{半磅}"/><w:szCs w:val="{半磅}"/>'
             '</w:rPr>'
             f'<w:t xml:space="preserve">{escape(项["文本"])}</w:t>'
