@@ -617,57 +617,64 @@ def 插入竖排文本框(docx_path, pdf_path):
 
     返回插入的个数。
     '''
-    from xml.sax.saxutils import escape
+    from io import BytesIO
 
+    import pymupdf
     from docx import Document
-    from docx.oxml import parse_xml
+    from docx.shared import Pt
 
     竖排们 = _找边缘竖排(pdf_path)
     if not 竖排们:
         return 0
 
-    W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-
+    src = pymupdf.open(pdf_path)
     doc = Document(docx_path)
     body = doc.element.body
     插入 = 0
+
     for 项 in 竖排们:
         x0, y0, x1, y1 = 项['bbox']
-        # framePr 的长度单位是 twips(1pt = 20 twips)。
-        # 旋转 90° 之后:框的"宽"对应字高方向,框的"高"对应整行长度方向 ——
-        # 正好和 PDF 里那个竖条 bbox 的宽高一致,直接沿用。
-        宽 = max(int((x1 - x0) * 20), 280)
-        高 = max(int((y1 - y0) * 20), 900)
-        x = max(int(x0 * 20), 0)
-        y = max(int(y0 * 20), 0)
-        # w:sz 是半磅值:20pt -> 40
-        半磅 = max(int(round((项.get('字号') or 10.0) * 2)), 8)
-        字体 = escape(_映射字体(项.get('字体')))
+        宽pt = max(x1 - x0, 12.0)
+        高pt = max(y1 - y0, 40.0)
 
-        xml = (
-            f'<w:p xmlns:w="{W_NS}">'
-            '<w:pPr>'
-            f'<w:framePr w:w="{宽}" w:h="{高}" w:hAnchor="page" w:vAnchor="page" '
-            f'w:x="{x}" w:y="{y}" w:wrap="none" w:hRule="atLeast"/>'
-            '<w:textDirection w:val="btLr"/>'
-            '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>'
-            '</w:pPr>'
-            '<w:r><w:rPr>'
-            f'<w:rFonts w:ascii="{字体}" w:hAnsi="{字体}" w:cs="{字体}"/>'
-            f'<w:sz w:val="{半磅}"/><w:szCs w:val="{半磅}"/>'
-            '</w:rPr>'
-            f'<w:t xml:space="preserve">{escape(项["文本"])}</w:t>'
-            '</w:r>'
-            '</w:p>'
-        )
+        # 直接裁 PDF 里那一块 —— 那里的字**本来就是旋转 90° 渲染好的**,
+        # 裁出来即是正确样子,不用再跟 Word 的 textDirection 较劲。
         try:
-            body.insert(0, parse_xml(xml))
+            page = src[项['页'] - 1]
+            pix = page.get_pixmap(clip=pymupdf.Rect(x0, y0, x1, y1), dpi=600)
+            png = pix.tobytes('png')
+        except Exception:
+            continue
+
+        try:
+            p = doc.add_paragraph()                 # 先加到末尾,再挪到开头
+            run = p.add_run()
+            run.add_picture(BytesIO(png), width=Pt(宽pt), height=Pt(高pt))
+            # 用 framePr 把它钉在页面原坐标上(定位这条 framePr 是可靠的,
+            # 不可靠的是它带不动文字方向)
+            pr = p._p.get_or_add_pPr()
+            frame = pr.makeelement(
+                '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}framePr',
+                {
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}w': str(int(宽pt * 20)),
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}h': str(int(高pt * 20)),
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}hAnchor': 'page',
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}vAnchor': 'page',
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}x': str(max(int(x0 * 20), 0)),
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}y': str(max(int(y0 * 20), 0)),
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}wrap': 'none',
+                    '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}hRule': 'exact',
+                }
+            )
+            pr.insert(0, frame)
+            body.insert(0, p._p)                    # 挪到文档开头,别占正文位置
             插入 += 1
         except Exception:
             continue
 
     if 插入:
         doc.save(docx_path)
+    src.close()
     return 插入
 
 
