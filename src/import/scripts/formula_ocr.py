@@ -393,9 +393,12 @@ def _拆空表格(表):
         父.remove(表)
         return
 
-    # 只剩半句:接回前一段末尾,别把一句话拆成两段
+    # 只剩半句:接回前一段末尾,别把一句话拆成两段。
+    # **但前一段含图片时不能接** —— 否则题注会被并进图片段落(实测 Table 1 的
+    # 题注就这么跑进了一个含 57 张图的段落里,看起来就是"图注错位")。
     前一 = 表.getprevious()
-    if len(文本们) == 1 and 前一 is not None and 前一.tag == qn('w:p'):
+    if len(文本们) == 1 and 前一 is not None and 前一.tag == qn('w:p') \
+            and 前一.find('.//' + qn('w:drawing')) is None:
         末尾们 = 前一.findall('.//' + qn('w:t'))
         if 末尾们:
             末尾们[-1].text = (末尾们[-1].text or '') + 文本们[0]
@@ -414,6 +417,52 @@ def _拆空表格(表):
         p.append(r)
         父.insert(位置 + i, p)
     父.remove(表)
+
+
+def 分离图注(docx_path):
+    """把"挤在图片段落里的题注文字"拆到独立段落。
+
+    pdf2docx 会把同一行上的图片和文字并进同一个段落 —— 实测 body 里有一个段落
+    同时含 57 张图和 `Table 1: Comparison of existing …`。在 Word 里看就是
+    "图片和它的说明对不上",因为题注根本没有自己的段落。
+
+    做法:段落同时含 ``w:drawing`` 且文字以 Figure/Table/Algorithm N 开头时,
+    把承载文字的那些 run 整体挪到该段之后的新段落里(图片留在原段)。
+
+    返回拆出来的题注段数。
+    """
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+    拆了 = 0
+    for p in list(doc.element.body.iter(qn('w:p'))):
+        if p.getparent() is None:
+            continue
+        if p.find('.//' + qn('w:drawing')) is None:
+            continue
+        文本 = ''.join(t.text or '' for t in p.iter(qn('w:t'))).strip()
+        if not re.match(r'(Figure|Table|Algorithm)\s*S?\d', 文本, re.I):
+            continue
+
+        题注runs = []
+        for r in p.findall(qn('w:r')):
+            if ''.join(t.text or '' for t in r.iter(qn('w:t'))).strip():
+                题注runs.append(r)
+        if not 题注runs:
+            continue
+
+        新段 = OxmlElement('w:p')
+        for r in 题注runs:
+            p.remove(r)
+            新段.append(r)
+        p.addnext(新段)
+        拆了 += 1
+
+    if 拆了:
+        doc.save(docx_path)
+    return 拆了
 
 
 def _有边框(tbl):
@@ -958,6 +1007,10 @@ def 主(产物目录, docx路径, pdf路径=None):
         except Exception:
             pass
         try:
+            分离图注(docx路径)
+        except Exception:
+            pass
+        try:
             if pdf路径:
                 清单['竖排文本框'] = 插入竖排文本框(docx路径, pdf路径)
         except Exception as e:
@@ -1033,6 +1086,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['拆排版表数'] = 拆排版表格(docx路径)
     except Exception as e:
         清单['拆表失败'] = str(e)[:200]
+
+    # 题注从图片段落里拆出来(见 分离图注 的注释)
+    try:
+        清单['分离图注数'] = 分离图注(docx路径)
+    except Exception as e:
+        清单['分离图注失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
