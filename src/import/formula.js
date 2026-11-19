@@ -58,22 +58,24 @@ export async function 提取公式图 ({ pdf, 输出目录, 超时 = 300_000 }) 
 }
 
 /**
- * 公式图 → LaTeX(pix2tex) → OMML → 写进 docx 成为**可编辑的 Word 公式**。
+ * 公式图 → LaTeX(pix2tex) → OMML → 写进 docx 成为**可编辑的 Word 公式**;
+ * 顺带做两件与公式无关但同样属于版式的事:拆掉 pdf2docx 的"排版容器表格"、
+ * 把边缘竖排短文还原成竖排文本框。
  *
- * 写进 docx 的方式是在文末追加一节「公式」:pdf2docx 已经把公式碾成表格里的字符碎片,
- * 硬对位只会更乱;集中列出、带页码与编号,反而便于回原文核对、也便于整段复制。
- *
- * @param {{产物目录:string, docx:string, 超时?:number}} 参数
+ * @param {{产物目录:string, docx:string, pdf?:string, 超时?:number}} 参数
+ *   pdf 给定时才能重建竖排文本框(需要 PDF 原始坐标)。
  * @returns {Promise<{ok:boolean, 识别数:number, 总数:number, 写回docx:boolean, 原因?:string}>}
  */
-export async function 公式OCR ({ 产物目录, docx, 超时 = 1_800_000 }) {
+export async function 公式OCR ({ 产物目录, docx, pdf = null, 超时 = 1_800_000 }) {
   if (!existsSync(OCR脚本路径)) {
     return { ok: false, 识别数: 0, 总数: 0, 写回docx: false, 原因: `公式识别脚本缺失 ${OCR脚本路径}` }
   }
 
+  const 参数 = [产物目录, docx]
+  if (pdf) 参数.push(pdf)
   const 结果 = await 跑Python({
     代码: `import runpy; runpy.run_path(r"${OCR脚本路径}", run_name="__main__")`,
-    参数: [产物目录, docx],
+    参数,
     超时
   })
 

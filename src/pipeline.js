@@ -158,7 +158,7 @@ export async function 转换 (参数) {
       // (如第 1 页)也要走一趟,否则那里的图注会一直留在格格不入的表格里。
       if (公式图结果?.ok) {
         try {
-          转换结果.公式OCR = await 公式OCR({ 产物目录: 目录, docx: 中间 })
+          转换结果.公式OCR = await 公式OCR({ 产物目录: 目录, docx: 中间, pdf: 文件 })
         } catch (e) {
           转换结果.公式OCR = {
             ok: false, 识别数: 0, 总数: 0, 写回docx: false,

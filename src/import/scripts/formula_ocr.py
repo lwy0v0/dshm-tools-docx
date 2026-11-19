@@ -527,6 +527,111 @@ def 拆排版表格(docx_path):
     return 拆了
 
 
+def _找边缘竖排(pdf_path, 字数上限=80, 页宽比例=0.12):
+    '''从 PDF 里找出"贴着页面边缘的竖排短文"(如 arXiv 首页左侧的卷期编号)。
+
+    和 pdf2docx/RawPageFitz 里那条判据保持一致:竖排 + 贴边 + 字数少。
+    '''
+    import pymupdf
+
+    doc = pymupdf.open(pdf_path)
+    结果 = []
+    for pno in range(doc.page_count):
+        page = doc[pno]
+        页宽 = page.rect.width
+        页高 = page.rect.height
+        for b in page.get_text('dict')['blocks']:
+            if b.get('type') != 0:
+                continue
+            行们 = b.get('lines', [])
+            if not 行们:
+                continue
+            竖 = False
+            for ln in 行们:
+                if ln.get('wmode'):
+                    竖 = True
+                    break
+                d = ln.get('dir') or [1.0, 0.0]
+                if abs(d[0]) < 0.5:
+                    竖 = True
+                    break
+            if not 竖:
+                continue
+            文本 = ' '.join(
+                ' '.join((s.get('text') or '').strip() for s in ln.get('spans', [])).strip()
+                for ln in 行们
+            ).strip()
+            if not 文本 or len(文本) > 字数上限:
+                continue
+            bb = pymupdf.Rect(b['bbox'])
+            if not (bb.x1 < 页宽 * 页宽比例 or bb.x0 > 页宽 * (1 - 页宽比例)):
+                continue
+            结果.append({'页': pno + 1, 'bbox': [round(v, 1) for v in bb], '文本': 文本})
+    return 结果
+
+
+def 插入竖排文本框(docx_path, pdf_path):
+    '''把 PDF 里的"边缘竖排短文"还原成 Word 文本框(贴边、竖排、绝对定位)。
+
+    为什么必须在 PDF 侧找:pdf2docx 只要看见竖排文本,就会把那一片版面判成表格
+    (``is_flow_layout`` 里"竖排按 stream table 模拟"),为了框住它把正文也卷进表格。
+    所以 RawPageFitz 把这行字从版面里摘掉了(不参与布局),这里再按 PDF 原始坐标
+    重建一个文本框 —— 既回到原来的位置,又不再干扰任何版面推断。
+
+    文本框用 VML ``v:shape`` + ``layout-flow:vertical-ideographic``(竖排),
+    定位相对页面(``mso-position-horizontal-relative:page``),不随段落流动。
+
+    返回插入的文本框个数。
+    '''
+    from xml.sax.saxutils import escape
+
+    from docx import Document
+    from docx.oxml import parse_xml
+
+    竖排们 = _找边缘竖排(pdf_path)
+    if not 竖排们:
+        return 0
+
+    W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    V_NS = 'urn:schemas-microsoft-com:vml'
+
+    doc = Document(docx_path)
+    body = doc.element.body
+    插入 = 0
+    for i, 项 in enumerate(竖排们, 1):
+        x0, y0, x1, y1 = 项['bbox']
+        宽 = max(x1 - x0, 14.0)
+        高 = max(y1 - y0, 40.0)
+        xml = (
+            f'<w:p xmlns:w="{W_NS}" xmlns:v="{V_NS}">'
+            '<w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>'
+            '<w:r><w:pict>'
+            f'<v:shape id="dshm_vert_{i}" type="#_x0000_t202" stroked="f" filled="f" '
+            f'style="position:absolute;left:{x0}pt;top:{y0}pt;width:{宽}pt;height:{高}pt;'
+            'mso-position-horizontal-relative:page;mso-position-vertical-relative:page;'
+            'layout-flow:vertical-ideographic;z-index:-251658240">'
+            '<v:textbox inset="0,0,0,0">'
+            '<w:txbxContent>'
+            '<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>'
+            f'<w:r><w:rPr><w:sz w:val="16"/></w:rPr>'
+            f'<w:t xml:space="preserve">{escape(项["文本"])}</w:t></w:r></w:p>'
+            '</w:txbxContent>'
+            '</v:textbox>'
+            '</v:shape>'
+            '</w:pict></w:r>'
+            '</w:p>'
+        )
+        try:
+            body.insert(0, parse_xml(xml))
+            插入 += 1
+        except Exception:
+            continue
+
+    if 插入:
+        doc.save(docx_path)
+    return 插入
+
+
 def 替换公式图片(docx_path, 条目们):
     """把 pdf2docx 注入的"公式图片"换成 OMML —— **原位替换的正路**。
 
@@ -792,7 +897,7 @@ def 追加进docx(docx_path, 条目们):
     doc.save(docx_path)
 
 
-def 主(产物目录, docx路径):
+def 主(产物目录, docx路径, pdf路径=None):
     清单路径 = os.path.join(产物目录, 'formulas.json')
     if not os.path.exists(清单路径):
         return {'ok': False, '原因': '没有 formulas.json'}
@@ -806,6 +911,12 @@ def 主(产物目录, docx路径):
             拆排版表格(docx路径)
         except Exception:
             pass
+        try:
+            if pdf路径:
+                清单['竖排文本框'] = 插入竖排文本框(docx路径, pdf路径)
+        except Exception as e:
+            清单['竖排文本框失败'] = str(e)[:200]
+        json.dump(清单, open(清单路径, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
         return {'ok': True, '识别数': 0, '成功数': 0}
 
     model = None
@@ -877,6 +988,14 @@ def 主(产物目录, docx路径):
     except Exception as e:
         清单['拆表失败'] = str(e)[:200]
 
+    # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
+    # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
+    try:
+        if pdf路径:
+            清单['竖排文本框'] = 插入竖排文本框(docx路径, pdf路径)
+    except Exception as e:
+        清单['竖排文本框失败'] = str(e)[:200]
+
     json.dump(清单, open(清单路径, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
 
     return {
@@ -891,5 +1010,5 @@ def 主(产物目录, docx路径):
 
 
 if __name__ == '__main__':
-    r = 主(sys.argv[1], sys.argv[2])
+    r = 主(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else None)
     print(json.dumps(r, ensure_ascii=False))
