@@ -566,22 +566,34 @@ def _找边缘竖排(pdf_path, 字数上限=80, 页宽比例=0.12):
             bb = pymupdf.Rect(b['bbox'])
             if not (bb.x1 < 页宽 * 页宽比例 or bb.x0 > 页宽 * (1 - 页宽比例)):
                 continue
-            结果.append({'页': pno + 1, 'bbox': [round(v, 1) for v in bb], '文本': 文本})
+            # 字号/字体照原文取,别写死 —— 写死会变成一坨小字
+            字号 = 0.0
+            字体 = ''
+            for ln in 行们:
+                for s in ln.get('spans', []):
+                    if not (s.get('text') or '').strip():
+                        continue
+                    字号 = max(字号, float(s.get('size') or 0))
+                    字体 = 字体 or (s.get('font') or '')
+            结果.append({'页': pno + 1, 'bbox': [round(v, 1) for v in bb],
+                       '文本': 文本, '字号': round(字号, 1), '字体': 字体})
     return 结果
 
 
 def 插入竖排文本框(docx_path, pdf_path):
-    '''把 PDF 里的"边缘竖排短文"还原成 Word 文本框(贴边、竖排、绝对定位)。
+    '''把 PDF 里的"边缘竖排短文"还原成 Word 里的竖排框架。
 
     为什么必须在 PDF 侧找:pdf2docx 只要看见竖排文本,就会把那一片版面判成表格
     (``is_flow_layout`` 里"竖排按 stream table 模拟"),为了框住它把正文也卷进表格。
     所以 RawPageFitz 把这行字从版面里摘掉了(不参与布局),这里再按 PDF 原始坐标
-    重建一个文本框 —— 既回到原来的位置,又不再干扰任何版面推断。
+    重建一个"固定在页面上"的竖排段落。
 
-    文本框用 VML ``v:shape`` + ``layout-flow:vertical-ideographic``(竖排),
-    定位相对页面(``mso-position-horizontal-relative:page``),不随段落流动。
+    **用 ``w:framePr``(段落框架),不用 VML ``v:shape``**:
+    实测 v:shape 的 ``position:absolute`` 与 ``layout-flow:vertical-ideographic``
+    在 Word 里既不定位也不竖排,只落成左上角一坨小字。framePr 是 Word 原生框架,
+    ``hAnchor/vAnchor="page"`` 直接按页面坐标摆,``w:textDirection`` 管竖排方向。
 
-    返回插入的文本框个数。
+    返回插入的个数。
     '''
     from xml.sax.saxutils import escape
 
@@ -593,32 +605,35 @@ def 插入竖排文本框(docx_path, pdf_path):
         return 0
 
     W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
-    V_NS = 'urn:schemas-microsoft-com:vml'
 
     doc = Document(docx_path)
     body = doc.element.body
     插入 = 0
-    for i, 项 in enumerate(竖排们, 1):
+    for 项 in 竖排们:
         x0, y0, x1, y1 = 项['bbox']
-        宽 = max(x1 - x0, 14.0)
-        高 = max(y1 - y0, 40.0)
+        # framePr 的长度单位是 twips(1pt = 20 twips)
+        宽 = max(int((x1 - x0) * 20), 280)
+        高 = max(int((y1 - y0) * 20), 900)
+        x = max(int(x0 * 20), 0)
+        y = max(int(y0 * 20), 0)
+        # w:sz 是半磅值:20pt -> 40
+        半磅 = max(int(round((项.get('字号') or 10.0) * 2)), 8)
+        字体 = escape(项.get('字体') or 'Times New Roman')
+
         xml = (
-            f'<w:p xmlns:w="{W_NS}" xmlns:v="{V_NS}">'
-            '<w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>'
-            '<w:r><w:pict>'
-            f'<v:shape id="dshm_vert_{i}" type="#_x0000_t202" stroked="f" filled="f" '
-            f'style="position:absolute;left:{x0}pt;top:{y0}pt;width:{宽}pt;height:{高}pt;'
-            'mso-position-horizontal-relative:page;mso-position-vertical-relative:page;'
-            'layout-flow:vertical-ideographic;z-index:-251658240">'
-            '<v:textbox inset="0,0,0,0">'
-            '<w:txbxContent>'
-            '<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr>'
-            f'<w:r><w:rPr><w:sz w:val="16"/></w:rPr>'
-            f'<w:t xml:space="preserve">{escape(项["文本"])}</w:t></w:r></w:p>'
-            '</w:txbxContent>'
-            '</v:textbox>'
-            '</v:shape>'
-            '</w:pict></w:r>'
+            f'<w:p xmlns:w="{W_NS}">'
+            '<w:pPr>'
+            f'<w:framePr w:w="{宽}" w:h="{高}" w:hAnchor="page" w:vAnchor="page" '
+            f'w:x="{x}" w:y="{y}" w:wrap="none" w:hRule="atLeast"/>'
+            '<w:textDirection w:val="tbRlV"/>'
+            '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>'
+            '</w:pPr>'
+            '<w:r><w:rPr>'
+            f'<w:rFonts w:ascii="{字体}" w:hAnsi="{字体}"/>'
+            f'<w:sz w:val="{半磅}"/><w:szCs w:val="{半磅}"/>'
+            '</w:rPr>'
+            f'<w:t xml:space="preserve">{escape(项["文本"])}</w:t>'
+            '</w:r>'
             '</w:p>'
         )
         try:
