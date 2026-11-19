@@ -461,6 +461,32 @@ def _像排版容器(tbl):
     return False
 
 
+def _像数据表(tbl):
+    """多行多列、格子内容都是短词 —— 这是真数据表,不能拆。
+
+    为什么需要这条:有的论文表格(如 Table 5 那张"不同预训练数据集对比")在 PDF 里
+    只有横线、还原出来**没有单元格边框**,于是被"无边框就拆"的判据误伤,
+    整张表被拆成一堆独立的单词段落(实测 Method / Meshgrid / BestFit / M6Doc …)。
+    """
+    from docx.oxml.ns import qn
+
+    行们 = tbl.findall(qn('w:tr'))
+    if len(行们) < 2:
+        return False
+
+    格数 = 短格 = 0
+    for tr in 行们:
+        for tc in tr.findall(qn('w:tc')):
+            文本 = ''.join(t.text or '' for t in tc.iter(qn('w:t'))).strip()
+            if not 文本:
+                continue
+            格数 += 1
+            if len(文本) <= 20:
+                短格 += 1
+    # 至少 6 个有内容的格子,且八成以上是短标签/数字
+    return 格数 >= 6 and 短格 >= 格数 * 0.8
+
+
 def 拆排版表格(docx_path):
     """拆掉 pdf2docx 用来对齐版式的"文字容器表格"。
 
@@ -489,6 +515,8 @@ def 拆排版表格(docx_path):
             continue                       # 含图 → 不动
         if len(tbl.findall(qn('w:tr'))) > 12:
             continue                       # 行太多 → 可能是双栏/大表
+        if _像数据表(tbl):
+            continue                       # 多行多列短词 → 真数据表,拆了就散了
         if not (_像排版容器(tbl) or not _有边框(tbl)):
             continue                       # 既不像容器、又有边框 → 真表格
         _拆空表格(tbl)
