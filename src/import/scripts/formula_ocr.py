@@ -416,6 +416,89 @@ def _拆空表格(表):
     父.remove(表)
 
 
+def _有边框(tbl):
+    """这张表有没有可见边框(表格级或单元格级)。"""
+    from docx.oxml.ns import qn
+    VAL = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}val'
+
+    pr = tbl.find(qn('w:tblPr'))
+    if pr is not None:
+        bd = pr.find(qn('w:tblBorders'))
+        if bd is not None:
+            for e in bd:
+                if (e.get(VAL) or 'none') != 'none':
+                    return True
+    for tc in tbl.iter(qn('w:tc')):
+        tcpr = tc.find(qn('w:tcPr'))
+        if tcpr is None:
+            continue
+        tcb = tcpr.find(qn('w:tcBorders'))
+        if tcb is None:
+            continue
+        for e in tcb:
+            if (e.get(VAL) or 'none') != 'none':
+                return True
+    return False
+
+
+def _像排版容器(tbl):
+    """表格里塞了"图注"或"整句正文" —— 那它只是 pdf2docx 的排版容器。
+
+    真数据表的格子是短标签/数字('M6Doc'、'83.0%'、'Dataset');
+    而排版容器里会出现 'Figure 1: Comparisons …' 这种整句、或者被截断的正文
+    ('ments remains underexp')。实测第 1 页那张 7 行 3 列表格就是这种。
+    """
+    from docx.oxml.ns import qn
+
+    for tc in tbl.iter(qn('w:tc')):
+        文本 = ''.join(t.text or '' for t in tc.iter(qn('w:t'))).strip()
+        if not 文本:
+            continue
+        if re.match(r'(Figure|Fig\.|Table)\s*\d', 文本):
+            return True
+        if len(文本) > 40 and ' ' in 文本:
+            return True
+    return False
+
+
+def 拆排版表格(docx_path):
+    """拆掉 pdf2docx 用来对齐版式的"文字容器表格"。
+
+    它生成这种表的场合:图注居中、分段对齐、双栏还原 —— 都不是真表格,只是
+    为了让文字落在原来的位置。在 Word 里就成了一堆错位的格子:实测第 1 页
+    `Figure 1: Comparisons …` 和正文片段被塞进同一张 7 行表,看起来就是
+    "表格和图片对不上"。
+
+    两条通道(满足其一就拆,含图的表和超长表一律不动):
+    * `_像排版容器`:格子里出现图注或整句正文 —— 针对性最强,带边框也照拆;
+    * 无边框(表格级与单元格级都无)+ 行数 ≤ 12。
+    含图的多半是多子图排版,拆了会把图序打乱。
+
+    拆法复用 `_拆空表格`:只剩一段文字的接回前一段末尾(图注正好跟着图),
+    多段就按行拆成普通段落 —— 内容与顺序都保留,只是不再有格子。
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+    拆了 = 0
+    for tbl in list(doc.element.body.iter(qn('w:tbl'))):
+        if tbl.getparent() is None:
+            continue
+        if tbl.find('.//' + qn('w:drawing')) is not None:
+            continue                       # 含图 → 不动
+        if len(tbl.findall(qn('w:tr'))) > 12:
+            continue                       # 行太多 → 可能是双栏/大表
+        if not (_像排版容器(tbl) or not _有边框(tbl)):
+            continue                       # 既不像容器、又有边框 → 真表格
+        _拆空表格(tbl)
+        拆了 += 1
+
+    if 拆了:
+        doc.save(docx_path)
+    return 拆了
+
+
 def 替换公式图片(docx_path, 条目们):
     """把 pdf2docx 注入的"公式图片"换成 OMML —— **原位替换的正路**。
 
@@ -689,6 +772,12 @@ def 主(产物目录, docx路径):
     清单 = json.load(open(清单路径, encoding='utf-8'))
     公式们 = 清单.get('公式', [])
     if not 公式们:
+        # 没有公式也要做版式清理:图注/正文被 pdf2docx 塞进了"排版容器表格",
+        # 第 1 页就没有公式,但那里的表格一样要拆。
+        try:
+            拆排版表格(docx路径)
+        except Exception:
+            pass
         return {'ok': True, '识别数': 0, '成功数': 0}
 
     model = None
@@ -752,6 +841,13 @@ def 主(产物目录, docx路径):
             清单['追加失败'] = str(e)[:200]
     else:
         写回 = False
+
+    # 拆掉 pdf2docx 的"排版容器表格"。**与公式无关**,所以放在 if 成功 外面 ——
+    # 之前放在里面,遇到没有公式的页(第 1 页)整块被跳过,图注就一直留在格子里。
+    try:
+        清单['拆排版表数'] = 拆排版表格(docx路径)
+    except Exception as e:
+        清单['拆表失败'] = str(e)[:200]
 
     json.dump(清单, open(清单路径, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
 
