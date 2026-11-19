@@ -7,8 +7,9 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { 产物目录名, 项目产物根, 壳子产物根 } from './paths.js'
+import { 产物目录名, 产物目录前缀, 项目产物根, 壳子产物根 } from './paths.js'
 import { 可用 } from './output/manifest.js'
+import { 版本 } from './version.js'
 
 export class 产物存储 {
   /**
@@ -27,9 +28,36 @@ export class 产物存储 {
     return { sha256, 大小: st.size, mtime: st.mtime.toISOString() }
   }
 
-  /** 本次应使用的产物目录(带样式版本加 `-样式` 后缀,与纯文本版并存) */
+  /**
+   * 本次该用的产物目录。
+   *
+   * 目录名带时间码(`文档名-20261118-2230-pdf2docx`),这样产物越积越多时也能一眼
+   * 看出哪份是哪次导的。但**不能因此让缓存失效**,所以先按前缀扫一遍已有目录,
+   * 谁的 manifest 指纹/选项/版本都对得上就复用谁;都对不上才用当前时间新建。
+   */
   目录 (源文件, sha256, 选项 = {}) {
-    return join(this.根, 产物目录名(源文件, sha256, 选项))
+    const 复用 = this.找已有目录(源文件, sha256, 选项)
+    if (复用) return 复用
+    return join(this.根, 产物目录名(源文件, 选项))
+  }
+
+  /** 扫同前缀的已有目录,返回第一个"还能用"的;没有就 null */
+  找已有目录 (源文件, sha256, 选项 = {}) {
+    if (!existsSync(this.根)) return null
+    const 前缀 = `${产物目录前缀(源文件, 选项)}-`
+    let 名们 = []
+    try {
+      名们 = readdirSync(this.根)
+    } catch {
+      return null
+    }
+    for (const 名 of 名们) {
+      if (!名.startsWith(前缀)) continue
+      const 目录 = join(this.根, 名)
+      if (!this.命中(目录, { sha256, 版本, 选项 })) continue
+      return 目录
+    }
+    return null
   }
 
   /** 命中检查:返回旧清单或 null */
