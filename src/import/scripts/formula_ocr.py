@@ -364,6 +364,58 @@ def 建公式段落(doc, omml, 编号):
     return p
 
 
+def _拆空表格(表):
+    """把"外壳表格"拆成正文段落。
+
+    公式图片摘走之后,pdf2docx 当初为了对齐公式而生成的表格就只剩一个空壳 ——
+    有些格子里还留着落在公式区域之外的半句正文(实测 `are computed as:`),
+    在 Word 里看就是一个突兀的空框。正文要留、表格壳子不要。
+
+    只在调用方确认过"这张表被我们摘过图、且里面已经没有图"时才调用,
+    免得误拆正经表格。
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    父 = 表.getparent()
+    if 父 is None:
+        return
+
+    文本们 = []
+    for tr in 表.findall(qn('w:tr')):
+        for tc in tr.findall(qn('w:tc')):
+            t = ''.join(x.text or '' for x in tc.iter(qn('w:t'))).strip()
+            if t:
+                文本们.append(t)
+
+    # 全空:直接删掉
+    if not 文本们:
+        父.remove(表)
+        return
+
+    # 只剩半句:接回前一段末尾,别把一句话拆成两段
+    前一 = 表.getprevious()
+    if len(文本们) == 1 and 前一 is not None and 前一.tag == qn('w:p'):
+        末尾们 = 前一.findall('.//' + qn('w:t'))
+        if 末尾们:
+            末尾们[-1].text = (末尾们[-1].text or '') + 文本们[0]
+            末尾们[-1].set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+            父.remove(表)
+            return
+
+    位置 = list(父).index(表)
+    for i, 文本 in enumerate(文本们):
+        p = OxmlElement('w:p')
+        r = OxmlElement('w:r')
+        t = OxmlElement('w:t')
+        t.text = 文本
+        t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+        r.append(t)
+        p.append(r)
+        父.insert(位置 + i, p)
+    父.remove(表)
+
+
 def 替换公式图片(docx_path, 条目们):
     """把 pdf2docx 注入的"公式图片"换成 OMML —— **原位替换的正路**。
 
@@ -377,7 +429,7 @@ def 替换公式图片(docx_path, 条目们):
     而 cx/cy(EMU = bbox 宽高 × 12700)是注入时唯一的身份特征。
 
     段落里可能还有正文(实测 "are computed as:" 和公式被排进同一段),
-    所以只摘掉图片、保留段落本身,公式另起一段。
+    所以只摘掉图片、保留段落本身,公式另起一段。摘空的表格壳子最后拆掉。
     """
     from docx import Document
     from docx.oxml.ns import qn
@@ -400,6 +452,7 @@ def 替换公式图片(docx_path, 条目们):
     doc = Document(docx_path)
     替换 = 0
     已用 = set()
+    碰过的表 = []          # 摘过图的表格,最后检查要不要把空壳拆掉
 
     # 用 XML 遍历而不是 doc.paragraphs:图片可能落在表格单元格里
     for p in list(doc.element.body.iter(qn('w:p'))):
@@ -434,10 +487,16 @@ def 替换公式图片(docx_path, 条目们):
                 # 公式必须落在**表格外**,否则会成为表格的一个单元格,既不对齐重排
                 # 也会把编号留在单元格里。有表格祖先就插到表格后面。
                 祖先 = p.getparent()
-                while 祖先 is not None and 祖先.tag != qn('w:tbl'):
+                所属表 = None
+                while 祖先 is not None:
+                    if 祖先.tag == qn('w:tbl'):
+                        所属表 = 祖先
+                        break
                     祖先 = 祖先.getparent()
-                if 祖先 is not None:
-                    祖先.addnext(新段._p)
+                if 所属表 is not None:
+                    所属表.addnext(新段._p)
+                    if 所属表 not in 碰过的表:
+                        碰过的表.append(所属表)
                 else:
                     p.addnext(新段._p)
                 图.getparent().remove(图)
@@ -452,6 +511,15 @@ def 替换公式图片(docx_path, 条目们):
             父 = p.getparent()
             if 父 is not None and 父.tag == qn('w:body'):
                 父.remove(p)
+
+    # 收尾:公式已经挪到表格外面了,当初为对齐公式建的那张表就成了空壳 ——
+    # 在 Word 里显示成一个突兀的空框(实测 35 页里 25 张这样的表)。
+    for 表 in 碰过的表:
+        if 表.getparent() is None:
+            continue
+        if 表.find('.//' + qn('w:drawing')) is not None:
+            continue                  # 还有别的图,别动它
+        _拆空表格(表)
 
     if 替换:
         doc.save(docx_path)
