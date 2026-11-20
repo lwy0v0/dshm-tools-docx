@@ -488,6 +488,53 @@ def _图尺寸(p):
         return None
 
 
+def 图片归位(docx_path):
+    """把跑到文档开头的图片段落,挪到它对应的题注之前。
+
+    为什么会有这一步:pdf2docx 的 Layout 会把图片块分到独立的 group,输出时
+    整批排在文档最前面 —— 实测第 4 页 Figure 3 的 12 张缩略图全在 body[0],
+    而它们的标签(Newspaper/Paper/Magazine)和题注 'Figure 3: …' 留在后面,
+    图和注因此对不上。改 raw blocks 顺序、改 Blocks.make_docx 顺序都无效,
+    因为那套分组在更上层。
+
+    做法:把文档开头**连续**的纯图片段落摘下来,插到第一个题注段落之前。
+    题注就是 Figure/Table/Algorithm + 编号 开头的那一行。
+
+    返回移动的段落数。
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+    body = doc.element.body
+    子们 = list(body)
+
+    头图 = []
+    for el in 子们:
+        if _纯图段落(el):
+            头图.append(el)
+        else:
+            break
+    if not 头图:
+        return 0
+
+    题注 = None
+    for el in 子们:
+        if el.tag != qn('w:p'):
+            continue
+        t = ''.join(x.text or '' for x in el.iter(qn('w:t'))).strip()
+        if re.match(r'(Figure|Table|Algorithm)\s*S?\d', t, re.I):
+            题注 = el
+            break
+    if 题注 is None:
+        return 0
+
+    for el in 头图:
+        body.remove(el)
+        题注.addprevious(el)
+    return len(头图)
+
+
 def 合并同行图片(docx_path, 容差=0.12):
     """把"连续、同尺寸、纯图"的段落合并成一个段落,让它们并排显示。
 
@@ -1235,6 +1282,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['合并同行图数'] = 合并同行图片(docx路径)
     except Exception as e:
         清单['合并同行图失败'] = str(e)[:200]
+
+    # 跑到文档开头的图片段落挪回题注之前(页码/顺序错位的补救)
+    try:
+        清单['图片归位数'] = 图片归位(docx路径)
+    except Exception as e:
+        清单['图片归位失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
