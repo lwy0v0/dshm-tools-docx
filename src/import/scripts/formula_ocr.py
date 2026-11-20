@@ -465,6 +465,56 @@ def 分离图注(docx_path):
     return 拆了
 
 
+def 拆含图表格(docx_path, 最大行数=14):
+    """把"图被排进表格"的表格摊平成段落序列。
+
+    pdf2docx 有时会把图塞进表格单元格(实测一张 8 行 12 图的表),而原 PDF 那里
+    根本没有表格 —— 在 Word 里就是一堆格子把图圈起来,还和图注错位。
+
+    拆法:按 "行 -> 单元格 -> 段落" 的阅读顺序,把单元格里的段落整体搬出来,
+    依次插到原表格位置,然后删掉表格。图还是图、字还是字、顺序保留,
+    只是不再有格子和边框。
+
+    只处理**含图**且行数不多的表:
+    * 不含图的由 _像数据表 / 拆排版表格 分别处理;
+    * 行数过多的(>14)可能是双栏或大版式表格,拆了容易乱序,先不动。
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+    拆了 = 0
+    for tbl in list(doc.element.body.iter(qn('w:tbl'))):
+        父 = tbl.getparent()
+        if 父 is None:
+            continue
+        if tbl.find('.//' + qn('w:drawing')) is None:
+            continue                        # 不含图 → 不归这里管
+        if len(tbl.findall(qn('w:tr'))) > 最大行数:
+            continue                        # 行太多 → 拆开容易乱序
+
+        搬出 = []
+        for tr in tbl.findall(qn('w:tr')):
+            for tc in tr.findall(qn('w:tc')):
+                for p in tc.findall(qn('w:p')):
+                    有图 = p.find('.//' + qn('w:drawing')) is not None
+                    有字 = ''.join(t.text or '' for t in p.iter(qn('w:t'))).strip()
+                    if not 有图 and not 有字:
+                        continue            # 空格子只是占位
+                    tc.remove(p)
+                    搬出.append(p)
+
+        位置 = list(父).index(tbl)
+        for i, p in enumerate(搬出):
+            父.insert(位置 + i, p)
+        父.remove(tbl)
+        拆了 += 1
+
+    if 拆了:
+        doc.save(docx_path)
+    return 拆了
+
+
 def _有边框(tbl):
     """这张表有没有可见边框(表格级或单元格级)。"""
     from docx.oxml.ns import qn
@@ -1092,6 +1142,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['分离图注数'] = 分离图注(docx路径)
     except Exception as e:
         清单['分离图注失败'] = str(e)[:200]
+
+    # 图被排进表格的,把表格摊平成段落序列
+    try:
+        清单['拆含图表数'] = 拆含图表格(docx路径)
+    except Exception as e:
+        清单['拆含图失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
