@@ -465,6 +465,87 @@ def 分离图注(docx_path):
     return 拆了
 
 
+def _纯图段落(p):
+    """这一段落是否"只有图、没有文字"。"""
+    from docx.oxml.ns import qn
+
+    if p.tag != qn('w:p'):
+        return False
+    if p.find('.//' + qn('w:drawing')) is None:
+        return False
+    return not ''.join(t.text or '' for t in p.iter(qn('w:t'))).strip()
+
+
+def _图尺寸(p):
+    """段落里第一张图的 (cx, cy),单位 EMU。"""
+    WP = '{http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing}'
+    ext = p.find('.//' + WP + 'extent')
+    if ext is None:
+        return None
+    try:
+        return int(ext.get('cx')), int(ext.get('cy'))
+    except (TypeError, ValueError):
+        return None
+
+
+def 合并同行图片(docx_path, 容差=0.12):
+    """把"连续、同尺寸、纯图"的段落合并成一个段落,让它们并排显示。
+
+    pdf2docx 输出时**每个 image block 一个段落**,所以 Figure 3 那种
+    "2 行 x 6 列文档页缩略图"的网格会变成 12 个段落竖着堆下来(用户实测:
+    "又变成一个图一行了")。同一行里的 6 张图本来该并排占一行 —— 合并到
+    一个段落,Word 会把它们依次横排,一行放不下才换行。
+
+    判据:连续、纯图、尺寸相同(±容差)。尺寸一变就说明换行了,自然断开。
+    图注/标签是文字段落,不参与合并,顺序不受影响。
+    """
+    from docx import Document
+
+    doc = Document(docx_path)
+    body = doc.element.body
+    合并 = 0
+
+    i = 0
+    while True:
+        子们 = [e for e in body if e.tag.endswith('}p') or e.tag.endswith('}tbl')]
+        if i >= len(子们):
+            break
+        el = 子们[i]
+        if not _纯图段落(el):
+            i += 1
+            continue
+
+        尺寸 = _图尺寸(el)
+        组 = [el]
+        j = i + 1
+        while j < len(子们):
+            nxt = 子们[j]
+            if not _纯图段落(nxt):
+                break
+            尺 = _图尺寸(nxt)
+            if not 尺寸 or not 尺:
+                break
+            if abs(尺[0] - 尺寸[0]) > 尺寸[0] * 容差 or abs(尺[1] - 尺寸[1]) > 尺寸[1] * 容差:
+                break                      # 尺寸变了 → 换行了
+            组.append(nxt)
+            j += 1
+
+        if len(组) >= 2:
+            首 = 组[0]
+            for p in 组[1:]:
+                for r in list(p):
+                    if r.tag.endswith('}r'):
+                        p.remove(r)
+                        首.append(r)
+                body.remove(p)
+            合并 += 1
+        i = j
+
+    if 合并:
+        doc.save(docx_path)
+    return 合并
+
+
 def 拆含图表格(docx_path, 最大行数=14):
     """把"图被排进表格"的表格摊平成段落序列。
 
@@ -1148,6 +1229,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['拆含图表数'] = 拆含图表格(docx路径)
     except Exception as e:
         清单['拆含图失败'] = str(e)[:200]
+
+    # 同一行的多张图并排(否则一个图一行,网格被压成竖排)
+    try:
+        清单['合并同行图数'] = 合并同行图片(docx路径)
+    except Exception as e:
+        清单['合并同行图失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。

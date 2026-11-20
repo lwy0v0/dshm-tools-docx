@@ -140,7 +140,10 @@ const 转换代码 = [
   '               for f in raw.get("公式", [])]',
   'cv = Converter(sys.argv[1])',
   'try:',
-  '    cv.convert(sys.argv[2], formula_regions=regions)',
+  '    # sort=True:让 pdf2docx 按**页面位置**排序 block。',
+  '    # 默认 False 时按 PyMuPDF 的抽取顺序输出,那个顺序不等于阅读顺序 ——',
+  '    # 实测第 4 页 Figure 3 的 12 张缩略图被排到文档最开头,标签留在中间。',
+  '    cv.convert(sys.argv[2], formula_regions=regions, sort=True)',
   'finally:',
   '    cv.close()'
 ].join('\n')
