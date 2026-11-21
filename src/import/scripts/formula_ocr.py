@@ -573,6 +573,7 @@ def 合并断行段落(docx_path):
     返回合并的次数。
     """
     from docx import Document
+    from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
 
     doc = Document(docx_path)
@@ -616,18 +617,91 @@ def 合并断行段落(docx_path):
             i += 1
             continue
 
-        # 把下一段的 run 搬过来(cur 的段落格式保留)
+        # 把下一段的**文字**搬过来,但用本段的格式重建 run。
+        # 直接搬 run 会把对方的字号/字体一起带进来 —— 实测合并后同一段里
+        # 有的字大有的字小(用户反馈"样式都不一样")。
+        首字号 = None
+        首字体 = None
+        for r in cur.findall(qn('w:r')):
+            sz = r.find(qn('w:rPr') + '/' + qn('w:sz')) if r.find(qn('w:rPr')) is not None else None
+            if sz is not None:
+                首字号 = sz.get(qn('w:val'))
+            rf = r.find(qn('w:rPr') + '/' + qn('w:rFonts')) if r.find(qn('w:rPr')) is not None else None
+            if rf is not None:
+                首字体 = rf.get(qn('w:ascii'))
+            if 首字号 or 首字体:
+                break
+
+        合并文本 = 文本(nxt)
         for r in list(nxt):
-            if r.tag == qn('w:pPr'):
-                continue
             nxt.remove(r)
-            cur.append(r)
+        新r = OxmlElement('w:r')
+        if 首字号 or 首字体:
+            rPr = OxmlElement('w:rPr')
+            if 首字体:
+                rf = OxmlElement('w:rFonts')
+                rf.set(qn('w:ascii'), 首字体)
+                rf.set(qn('w:hAnsi'), 首字体)
+                rPr.append(rf)
+            if 首字号:
+                for 标签 in ('w:sz', 'w:szCs'):
+                    e = OxmlElement(标签)
+                    e.set(qn('w:val'), 首字号)
+                    rPr.append(e)
+            新r.append(rPr)
+        t = OxmlElement('w:t')
+        t.text = 合并文本
+        t.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+        新r.append(t)
+        cur.append(新r)
         body.remove(nxt)
         合并 += 1
 
     if 合并:
         doc.save(docx_path)
     return 合并
+
+
+def 统一正文字号(docx_path, 半磅='20'):
+    """给没有显式字号的正文段落补上字号。
+
+    为什么会不一致:pdf2docx 给大多数字段写了 ``w:sz``(实测正文 20 = 10pt),
+    但有些段落没写,于是回落到 styles.xml 的 docDefaults(实测 22 = 11pt)。
+    同一页上 10pt 和 11pt 混排,看起来就是"有的字大、有的字小"(用户实测反馈)。
+
+    只处理**正文层级**的段落(不在表格单元格里),表格里的字号按原样保留。
+    """
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+    body = doc.element.body
+    补了 = 0
+    for p in body.iter(qn('w:p')):
+        链 = []
+        x = p.getparent()
+        while x is not None:
+            链.append(x.tag)
+            x = x.getparent()
+        if qn('w:tc') in 链:
+            continue                          # 表格里的不动
+        for r in p.findall(qn('w:r')):
+            rPr = r.find(qn('w:rPr'))
+            if rPr is not None and rPr.find(qn('w:sz')) is not None:
+                continue                      # 已有字号
+            if rPr is None:
+                rPr = OxmlElement('w:rPr')
+                r.insert(0, rPr)
+            for 标签 in ('w:sz', 'w:szCs'):
+                e = OxmlElement(标签)
+                e.set(qn('w:val'), 半磅)
+                rPr.append(e)
+            补了 += 1
+
+    if 补了:
+        doc.save(docx_path)
+    return 补了
 
 
 def 合并同行图片(docx_path, 容差=0.12):
@@ -1389,6 +1463,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['合并断行数'] = 合并断行段落(docx路径)
     except Exception as e:
         清单['合并断行失败'] = str(e)[:200]
+
+    # 补字号:没有 w:sz 的段落会回落到 docDefaults(11pt)，与正文 10pt 混排
+    try:
+        清单['补字号数'] = 统一正文字号(docx路径)
+    except Exception as e:
+        清单['补字号失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
