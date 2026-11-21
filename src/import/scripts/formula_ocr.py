@@ -756,6 +756,58 @@ def 清除绕图缩进(docx_path, 阈值=4000):
     return 清了
 
 
+def 统一正文缩进(docx_path, 左='720', 右='1738'):
+    """把正文段落的左右缩进统一成页边距。
+
+    pdf2docx 给不同 block 的缩进不一致 —— 实测第 4 页 'The generated pages from
+    MeshLayout-1M …' 那一段完全没有 w:ind,而它的上下段都是 left=720。字号虽然
+    一样,整段却明显偏左(用户实测:"这一句话的位置明显偏左")。
+
+    只处理**正文段落**:有 hanging 的列表项跳过、短标题/页码跳过、
+    表格内的跳过。左右都按页面正常边距给。
+    """
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+    body = doc.element.body
+    改了 = 0
+    for p in body.iter(qn('w:p')):
+        链 = []
+        x = p.getparent()
+        while x is not None:
+            链.append(x.tag)
+            x = x.getparent()
+        if qn('w:tc') in 链:
+            continue
+
+        t = ''.join(e.text or '' for e in p.iter(qn('w:t'))).strip()
+        if len(t) < 40 or not t[:1].isalpha():
+            continue                          # 短句/页码/编号 → 不动
+        if t.isupper():
+            continue                          # 标题 → 不动
+
+        pPr = p.find(qn('w:pPr'))
+        if pPr is None:
+            pPr = OxmlElement('w:pPr')
+            p.insert(0, pPr)
+        ind = pPr.find(qn('w:ind'))
+        if ind is not None and ind.get(qn('w:hanging')) is not None:
+            continue                          # 列表项 → 保留悬挂缩进
+        if ind is None:
+            ind = OxmlElement('w:ind')
+            pPr.append(ind)
+        if ind.get(qn('w:left')) != 左 or ind.get(qn('w:right')) != 右:
+            ind.set(qn('w:left'), 左)
+            ind.set(qn('w:right'), 右)
+            改了 += 1
+
+    if 改了:
+        doc.save(docx_path)
+    return 改了
+
+
 def 合并同行图片(docx_path, 容差=0.12):
     """把"连续、同尺寸、纯图"的段落合并成一个段落,让它们并排显示。
 
@@ -1527,6 +1579,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['清绕图缩进数'] = 清除绕图缩进(docx路径)
     except Exception as e:
         清单['清缩进失败'] = str(e)[:200]
+
+    # 正文段落的左右缩进统一成页边距(有的 block 完全没有 w:ind,看起来偏左)
+    try:
+        清单['统一缩进数'] = 统一正文缩进(docx路径)
+    except Exception as e:
+        清单['统一缩进失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
