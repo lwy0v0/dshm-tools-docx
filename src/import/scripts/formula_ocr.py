@@ -535,6 +535,101 @@ def 图片归位(docx_path):
     return len(头图)
 
 
+def _是正文续行(t):
+    """这一段像不像"正文的一个续行"。"""
+    if not t:
+        return False
+    if re.match(r'(Figure|Table|Algorithm)\s*S?\d', t, re.I):
+        return False                              # 图注/表注
+    if re.match(r'^\d+[.)]\s', t):
+        return False                              # 列表项 1. / 2)
+    if re.match(r'^\(?[a-zA-Z0-9]\)\s', t):
+        return False                              # (a) / (1)
+    if re.match(r'^\d+(\.\d+)*\s*$', t):
+        return False                              # 章节号 3.2
+    if len(t) <= 24 and t.isupper():
+        return False                              # 全大写短标题
+    if len(t) <= 6:
+        return False                              # 页码、编号之类的碎片
+    return True
+
+
+def 合并断行段落(docx_path):
+    """把 pdf2docx 按行宽切碎的段落合并回原文的一段。
+
+    pdf2docx 用"相邻行的宽度是否一致"来分组段落。原文里绕图排版的段落,每一行的
+    右边界都不同,于是被切成**一行一段** —— 实测第 4 页的
+    'Through the process above … occupancy.' 变成 13 个短段落,在 Word 里看就是
+    "前后都有一段不是原文的"(用户实测反馈)。
+
+    合并判据(必须**同时**满足,否则很容易把标题、页码也粘进来):
+    * 当前段以连字符结尾('doc-')—— 跨行断词,去掉连字符再拼;
+      **或** 当前段不以句读结尾(. ! ? : ;)**且下一段以小写字母开头**
+      (真的是同一句的续行);
+    * 两段都通过 _是正文续行 的排除规则(图注/列表/章节号/短标题/页码)。
+
+    合并时保留第一段的段落格式;若前一段末尾不是空格而下一段以字母开头,补一个空格。
+
+    返回合并的次数。
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+    body = doc.element.body
+
+    def 文本(p):
+        return ''.join(t.text or '' for t in p.iter(qn('w:t')))
+
+    合并 = 0
+    i = 0
+    while True:
+        段落们 = [e for e in body if e.tag == qn('w:p')]
+        if i >= len(段落们) - 1:
+            break
+        cur, nxt = 段落们[i], 段落们[i + 1]
+        t = 文本(cur).strip()
+        t2 = 文本(nxt).strip()
+        if not _是正文续行(t) or not _是正文续行(t2):
+            i += 1
+            continue
+
+        应并 = False
+        if t.endswith('-'):
+            应并 = True
+            # 跨行断词:去掉行尾连字符
+            末尾们 = cur.findall('.//' + qn('w:t'))
+            if 末尾们 and (末尾们[-1].text or '').endswith('-'):
+                末尾们[-1].text = 末尾们[-1].text[:-1]
+                末尾们[-1].set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+        elif not re.search(r'[.!?:;]\s*$', t) and t2[:1].islower():
+            # 上一段没句读、下一段以小写开头 —— 同一句被切开了
+            应并 = True
+            # 两段之间补一个空格,否则会拼成 "progressivelproducing"
+            if t and not t.endswith(' '):
+                末尾们 = cur.findall('.//' + qn('w:t'))
+                if 末尾们 and not (末尾们[-1].text or '').endswith(' '):
+                    末尾们[-1].text = (末尾们[-1].text or '') + ' '
+                    末尾们[-1].set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+
+        if not 应并:
+            i += 1
+            continue
+
+        # 把下一段的 run 搬过来(cur 的段落格式保留)
+        for r in list(nxt):
+            if r.tag == qn('w:pPr'):
+                continue
+            nxt.remove(r)
+            cur.append(r)
+        body.remove(nxt)
+        合并 += 1
+
+    if 合并:
+        doc.save(docx_path)
+    return 合并
+
+
 def 合并同行图片(docx_path, 容差=0.12):
     """把"连续、同尺寸、纯图"的段落合并成一个段落,让它们并排显示。
 
@@ -1288,6 +1383,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['图片归位数'] = 图片归位(docx路径)
     except Exception as e:
         清单['图片归位失败'] = str(e)[:200]
+
+    # 把 pdf2docx 按行宽切碎的段落合并回原文(绕图段落会变成"一行一段")
+    try:
+        清单['合并断行数'] = 合并断行段落(docx路径)
+    except Exception as e:
+        清单['合并断行失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
