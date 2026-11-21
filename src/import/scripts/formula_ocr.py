@@ -808,6 +808,92 @@ def 统一正文缩进(docx_path, 左='720', 右='1738'):
     return 改了
 
 
+def 拆分列表项(docx_path):
+    """把"列表项标题 + 正文"粘在一起的段落拆开。
+
+    PDF 里常见这种写法::
+
+        1. Scale-stratified Candidate Sampling  Directly sampling elements from …
+           ↑ 小标题                              ↑ 该条的正文
+
+    由于小标题和正文之间没有段间距,pdf2docx 会把它们并成一段,合并无间距段落
+    那一步也会进一步粘牢 —— 结果是列表项读起来像一句话(用户实测:"列表的处理
+    也有问题,没有被正确的分段")。
+
+    判据:段落以 ``数字. `` 开头,小标题是若干首字母大写的词(不以句号结尾),
+    后面紧跟一个**大写开头的完整句子**。命中就从小标题之后断开。
+
+    返回拆开的个数。
+    """
+    from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    # "2. Meshgrid Construction" + "Construct the meshgrid based on …"
+    模式 = re.compile(r'^(\d+\.\s+[A-Z][A-Za-z0-9\-]+(?:\s+[A-Z][A-Za-z0-9\-]+){0,5})\s+([A-Z][a-z].{20,})$')
+
+    doc = Document(docx_path)
+    body = doc.element.body
+    拆了 = 0
+    for p in list(body.iter(qn('w:p'))):
+        链 = []
+        x = p.getparent()
+        while x is not None:
+            链.append(x.tag)
+            x = x.getparent()
+        if qn('w:tc') in 链:
+            continue
+
+        t = ''.join(e.text or '' for e in p.iter(qn('w:t'))).strip()
+        m = 模式.match(t)
+        if not m:
+            continue
+        标题, 正文 = m.group(1).strip(), m.group(2).strip()
+
+        # 取本段第一个 run 的字体/字号,给两段都用
+        rPr模板 = None
+        for r in p.findall(qn('w:r')):
+            rPr模板 = r.find(qn('w:rPr'))
+            if rPr模板 is not None:
+                break
+
+        def 造段(文字):
+            新p = OxmlElement('w:p')
+            pPr = p.find(qn('w:pPr'))
+            if pPr is not None:
+                import copy
+                新p.append(copy.deepcopy(pPr))
+            r = OxmlElement('w:r')
+            if rPr模板 is not None:
+                import copy
+                r.append(copy.deepcopy(rPr模板))
+            e = OxmlElement('w:t')
+            e.text = 文字
+            e.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+            r.append(e)
+            新p.append(r)
+            return 新p
+
+        p.addnext(造段(正文))
+        # 本段只留标题
+        for r in list(p.findall(qn('w:r'))):
+            p.remove(r)
+        r = OxmlElement('w:r')
+        if rPr模板 is not None:
+            import copy
+            r.append(copy.deepcopy(rPr模板))
+        e = OxmlElement('w:t')
+        e.text = 标题
+        e.set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+        r.append(e)
+        p.append(r)
+        拆了 += 1
+
+    if 拆了:
+        doc.save(docx_path)
+    return 拆了
+
+
 def 合并无间距段落(docx_path):
     """把"段间距为 0"的相邻正文段落合并成一段。
 
@@ -1677,6 +1763,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['合并无间距数'] = 合并无间距段落(docx路径)
     except Exception as e:
         清单['合并无间距失败'] = str(e)[:200]
+
+    # 列表项标题与正文被粘成一段的,拆开
+    try:
+        清单['拆分列表数'] = 拆分列表项(docx路径)
+    except Exception as e:
+        清单['拆分列表失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
