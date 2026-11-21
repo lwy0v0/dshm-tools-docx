@@ -808,6 +808,92 @@ def 统一正文缩进(docx_path, 左='720', 右='1738'):
     return 改了
 
 
+def 合并无间距段落(docx_path):
+    """把"段间距为 0"的相邻正文段落合并成一段。
+
+    PDF 里有些文档**不用段间距、也不用首行缩进**来分段,文字是连续排下来的。
+    但 PyMuPDF 仍会按内部块边界把它切成多个 block,pdf2docx 就照原样输出成多个
+    段落 —— 看起来是一句一段,读者其实该连着读(用户实测:"他根本就没有分段,
+    是直接一段连着另一段,甚至没有换行,同一行里前一段结束后一段继续")。
+
+    判据:前一段的 space_after 与本段的 space_before 都 <= 0,视为同一段的延续。
+    有段间距的照旧分开;标题/列表项/图注/页码不参与(见 _是正文续行)。
+
+    返回合并次数。
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+    body = doc.element.body
+
+    def 文本(p):
+        return ''.join(t.text or '' for t in p.iter(qn('w:t')))
+
+    def 段后(p):
+        pPr = p.find(qn('w:pPr'))
+        if pPr is None:
+            return 0.0
+        sp = pPr.find(qn('w:spacing'))
+        if sp is None:
+            return 0.0
+        v = sp.get(qn('w:after'))
+        try:
+            return float(v) / 20.0 if v else 0.0       # twips -> pt
+        except ValueError:
+            return 0.0
+
+    def 段前(p):
+        pPr = p.find(qn('w:pPr'))
+        if pPr is None:
+            return 0.0
+        sp = pPr.find(qn('w:spacing'))
+        if sp is None:
+            return 0.0
+        v = sp.get(qn('w:before'))
+        try:
+            return float(v) / 20.0 if v else 0.0
+        except ValueError:
+            return 0.0
+
+    合并 = 0
+    i = 0
+    while True:
+        段落们 = [e for e in body if e.tag == qn('w:p')]
+        if i >= len(段落们) - 1:
+            break
+        cur, nxt = 段落们[i], 段落们[i + 1]
+        t, t2 = 文本(cur).strip(), 文本(nxt).strip()
+        if not _是正文续行(t) or not _是正文续行(t2):
+            i += 1
+            continue
+        # 只看**这两段之间**的间距:cur 的 after 与 nxt 的 before。
+        # 不要看 cur 的 before —— 那是它跟上一段的距离(实测 [7] 的 before=152
+        # 是它和上文之间的,和 [8] 无关;误用它会把所有段落都判成"有间距")。
+        if 段后(cur) > 0.5 or 段前(nxt) > 0.5:
+            i += 1                                   # 真有段间距 → 是两段
+            continue
+
+        # 拼过去(补空格),保留本段格式
+        if t and not t.endswith(' '):
+            末尾们 = cur.findall('.//' + qn('w:t'))
+            if 末尾们:
+                末尾们[-1].text = (末尾们[-1].text or '') + ' '
+                末尾们[-1].set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
+
+        for r in list(nxt):
+            if r.tag == qn('w:pPr'):
+                continue
+            nxt.remove(r)
+            cur.append(r)
+        body.remove(nxt)
+        合并 += 1
+
+    if 合并:
+        doc.save(docx_path)
+    return 合并
+
+
 def 合并同行图片(docx_path, 容差=0.12):
     """把"连续、同尺寸、纯图"的段落合并成一个段落,让它们并排显示。
 
@@ -1585,6 +1671,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['统一缩进数'] = 统一正文缩进(docx路径)
     except Exception as e:
         清单['统一缩进失败'] = str(e)[:200]
+
+    # 段间距为 0 的相邻正文段落合并(PDF 里它们本来就是连续排下来的)
+    try:
+        清单['合并无间距数'] = 合并无间距段落(docx路径)
+    except Exception as e:
+        清单['合并无间距失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
