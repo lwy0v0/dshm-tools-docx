@@ -547,8 +547,8 @@ def _是正文续行(t):
         return False                              # (a) / (1)
     if re.match(r'^\d+(\.\d+)*\s*$', t):
         return False                              # 章节号 3.2
-    if len(t) <= 24 and t.isupper():
-        return False                              # 全大写短标题
+    if t.isupper():
+        return False                              # 全大写标题(不限长度)
     if len(t) <= 6:
         return False                              # 页码、编号之类的碎片
     return True
@@ -603,7 +603,9 @@ def 合并断行段落(docx_path):
             if 末尾们 and (末尾们[-1].text or '').endswith('-'):
                 末尾们[-1].text = 末尾们[-1].text[:-1]
                 末尾们[-1].set('{http://www.w3.org/XML/1998/namespace}space', 'preserve')
-        elif not re.search(r'[.!?:;]\s*$', t) and t2[:1].islower():
+        elif not re.search(r'[.!?:;]\s*$', t) and (t2[:1].islower() or
+                                                   re.match(r'^[A-Z][a-z]', t2) is not None and
+                                                   len(t) < 40 and not t.endswith('.')):
             # 上一段没句读、下一段以小写开头 —— 同一句被切开了
             应并 = True
             # 两段之间补一个空格,否则会拼成 "progressivelproducing"
@@ -702,6 +704,56 @@ def 统一正文字号(docx_path, 半磅='20'):
     if 补了:
         doc.save(docx_path)
     return 补了
+
+
+def 清除绕图缩进(docx_path, 阈值=4000):
+    """去掉"绕图段落"的超大右缩进。
+
+    pdf2docx 会把 PDF 里"文字绕开右侧图"的版式还原成**段落右缩进** —— 实测
+    'Through the process above …' 那段 right=6192 twips(310pt),正文宽 396pt
+    只剩 86pt。
+
+    但图现在是**四周型环绕(wrapSquare)**,Word 会自动把文字排在图左侧,再叠加
+    一个 310pt 的右缩进就变成双重限制 —— 正文被压成一条窄条,看起来像"整体往前
+    缩进了一大截"(用户实测反馈)。
+
+    所以:环绕已经负责留白,这个缩进要清掉。
+    只清 >= 阈值(200pt)的**大**右缩进,正常页边距(约 87pt)不动。
+    """
+    from docx import Document
+    from docx.oxml.ns import qn
+
+    doc = Document(docx_path)
+    body = doc.element.body
+    清了 = 0
+    for p in body.iter(qn('w:p')):
+        链 = []
+        x = p.getparent()
+        while x is not None:
+            链.append(x.tag)
+            x = x.getparent()
+        if qn('w:tc') in 链:
+            continue                          # 表格里的不动
+        pPr = p.find(qn('w:pPr'))
+        if pPr is None:
+            continue
+        ind = pPr.find(qn('w:ind'))
+        if ind is None:
+            continue
+        right = ind.get(qn('w:right'))
+        if right is None:
+            continue
+        try:
+            if int(right) < 阈值:
+                continue
+        except ValueError:
+            continue
+        ind.attrib.pop(qn('w:right'), None)
+        清了 += 1
+
+    if 清了:
+        doc.save(docx_path)
+    return 清了
 
 
 def 合并同行图片(docx_path, 容差=0.12):
@@ -1469,6 +1521,12 @@ def 主(产物目录, docx路径, pdf路径=None):
         清单['补字号数'] = 统一正文字号(docx路径)
     except Exception as e:
         清单['补字号失败'] = str(e)[:200]
+
+    # 图已四周型环绕,清掉 pdf2docx 还原出来的超大右缩进(否则正文被压成窄条)
+    try:
+        清单['清绕图缩进数'] = 清除绕图缩进(docx路径)
+    except Exception as e:
+        清单['清缩进失败'] = str(e)[:200]
 
     # 边缘竖排短文还原成文本框。同样与公式无关:pdf2docx 把它从版面里摘掉了
     # (否则会把整片版面拖成表格),这里按 PDF 原坐标补一个绝对定位的竖排文本框。
